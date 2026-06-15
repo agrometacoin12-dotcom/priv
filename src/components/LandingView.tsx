@@ -2,6 +2,7 @@ import React, { useState } from "react";
 import { User } from "../types";
 import { Key, Plus, LogIn, Lock, ArrowRight, ShieldCheck, HelpCircle } from "lucide-react";
 import { motion } from "motion/react";
+import { apiCreateUser, apiAuthUser } from "../lib/api";
 
 interface LandingViewProps {
   onAccountCreated: (user: User) => void;
@@ -19,12 +20,7 @@ export default function LandingView({ onAccountCreated, onAccountAccessed }: Lan
     setLoading(true);
     setErrorSubmit("");
     try {
-      const res = await fetch("/api/users", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-      });
-      if (!res.ok) throw new Error("Failed to create user account.");
-      const data = await res.json();
+      const data = await apiCreateUser();
       onAccountCreated(data);
     } catch (err: any) {
       setErrorSubmit(err.message || "Something went wrong.");
@@ -60,18 +56,7 @@ export default function LandingView({ onAccountCreated, onAccountAccessed }: Lan
 
     setLoading(true);
     try {
-      const res = await fetch(`/api/users/${cleanId}/auth`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ pin: pinInput }),
-      });
-
-      if (!res.ok) {
-        const errorData = await res.json();
-        throw new Error(errorData.error || "Failed to access portal. Check credentials.");
-      }
-
-      const data = await res.json();
+      const data = await apiAuthUser(cleanId, pinInput);
       onAccountAccessed({ ...data.user, isOwner: true });
     } catch (err: any) {
       setErrorSubmit(err.message || "Credentials verification failed.");

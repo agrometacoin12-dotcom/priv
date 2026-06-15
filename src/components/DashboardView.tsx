@@ -6,6 +6,10 @@ import {
   MapPin, UserCheck, AlertCircle, RefreshCw, Key, QrCode
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
+import { 
+  apiGetPosts, apiGetComments, apiCreatePost, apiDeletePost, 
+  apiDeleteComment, apiToggleNickname, apiChangePin 
+} from "../lib/api";
 
 interface DashboardViewProps {
   user: User;
@@ -44,9 +48,7 @@ export default function DashboardView({ user, onLogout, onUpdateUser }: Dashboar
     setFeedLoading(true);
     setActionError(null);
     try {
-      const res = await fetch(`/api/users/${user.id}/posts`);
-      if (!res.ok) throw new Error("Failed to load your feed.");
-      const data = await res.json();
+      const data = await apiGetPosts(user.id);
       setPosts(data.posts || []);
     } catch (err: any) {
       setActionError(err.message || "An issue occurred connecting to backend.");
@@ -62,11 +64,8 @@ export default function DashboardView({ user, onLogout, onUpdateUser }: Dashboar
 
   const loadComments = async (postId: string) => {
     try {
-      const res = await fetch(`/api/posts/${postId}/comments`);
-      if (res.ok) {
-        const comments = await res.json();
-        setCommentsMap(prev => ({ ...prev, [postId]: comments }));
-      }
+      const comments = await apiGetComments(postId);
+      setCommentsMap(prev => ({ ...prev, [postId]: comments }));
     } catch (err) {
       console.error("Error loading comments", err);
     }
@@ -87,18 +86,7 @@ export default function DashboardView({ user, onLogout, onUpdateUser }: Dashboar
 
     setActionError(null);
     try {
-      const res = await fetch(`/api/users/${user.id}/posts`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ pin: user.pin, content: newPostContent.trim() }),
-      });
-
-      if (!res.ok) {
-        const errData = await res.json();
-        throw new Error(errData.error || "Failed to make post.");
-      }
-
-      const created = await res.json();
+      const created = await apiCreatePost(user.id, user.pin || "", newPostContent.trim());
       setPosts(prev => [created, ...prev]);
       setNewPostContent("");
     } catch (err: any) {
@@ -111,17 +99,7 @@ export default function DashboardView({ user, onLogout, onUpdateUser }: Dashboar
 
     setActionError(null);
     try {
-      const res = await fetch(`/api/posts/${postId}`, {
-        method: "DELETE",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ pin: user.pin, userId: user.id }),
-      });
-
-      if (!res.ok) {
-        const errData = await res.json();
-        throw new Error(errData.error || "Failed to delete post.");
-      }
-
+      await apiDeletePost(postId, user.id, user.pin || "");
       setPosts(prev => prev.filter(p => p.id !== postId));
       if (expandedPostId === postId) setExpandedPostId(null);
     } catch (err: any) {
@@ -134,17 +112,7 @@ export default function DashboardView({ user, onLogout, onUpdateUser }: Dashboar
 
     setActionError(null);
     try {
-      const res = await fetch(`/api/comments/${commentId}`, {
-        method: "DELETE",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ pin: user.pin, userId: user.id }),
-      });
-
-      if (!res.ok) {
-        const errData = await res.json();
-        throw new Error(errData.error || "Failed to delete comment.");
-      }
-
+      await apiDeleteComment(commentId, user.id, user.pin || "");
       // Reload comments for this post
       loadComments(postId);
     } catch (err: any) {
@@ -156,17 +124,7 @@ export default function DashboardView({ user, onLogout, onUpdateUser }: Dashboar
     setNicknamePrivate(checked);
     setActionError(null);
     try {
-      const res = await fetch(`/api/users/${user.id}/toggle-nickname`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ pin: user.pin, isPrivate: checked }),
-      });
-
-      if (!res.ok) {
-        throw new Error("Unable to update privacy setting.");
-      }
-
-      const resData = await res.json();
+      const resData = await apiToggleNickname(user.id, user.pin || "", checked);
       onUpdateUser({ ...user, isNicknamePrivate: resData.isNicknamePrivate });
     } catch (err: any) {
       setNicknamePrivate(!checked); // revert state
@@ -184,18 +142,7 @@ export default function DashboardView({ user, onLogout, onUpdateUser }: Dashboar
     }
 
     try {
-      const res = await fetch(`/api/users/${user.id}/change-pin`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ pin: currentPin, newPin }),
-      });
-
-      if (!res.ok) {
-        const errData = await res.json();
-        throw new Error(errData.error || "Invalid current PIN.");
-      }
-
-      const resData = await res.json();
+      const resData = await apiChangePin(user.id, currentPin, newPin);
       onUpdateUser({ ...user, pin: resData.pin });
       setPinMessage({ text: "PIN updated successfully! Remember to save it.", error: false });
       setCurrentPin("");

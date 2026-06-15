@@ -6,6 +6,10 @@ import {
   ArrowLeft, CheckCircle2, Search, X
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
+import { 
+  apiGetUser, apiGetPosts, apiGetComments, 
+  apiLikePost, apiCreateComment, apiAuthUser 
+} from "../lib/api";
 
 interface BoardViewProps {
   userId: string;
@@ -44,44 +48,31 @@ export default function BoardView({ userId, onGoHome, onOwnerUnlocked }: BoardVi
     setBoardError(null);
     try {
       // 1. Fetch Profile info
-      const profileRes = await fetch(`/api/users/${userId}`);
-      if (!profileRes.ok) {
-        if (profileRes.status === 404) {
-          throw new Error("This anonymous board does not exist or was deleted.");
-        }
-        throw new Error("Error fetching anonymous board profile.");
-      }
-      const profileData = await profileRes.json();
+      const profileData = await apiGetUser(userId);
       setProfile(profileData);
 
       // 2. Fetch Board posts
-      const postsRes = await fetch(`/api/users/${userId}/posts`);
-      if (postsRes.ok) {
-        const postsData = await postsRes.json();
-        const loadedPosts: Post[] = postsData.posts || [];
-        setPosts(loadedPosts);
+      const postsData = await apiGetPosts(userId);
+      const loadedPosts: Post[] = postsData.posts || [];
+      setPosts(loadedPosts);
 
-        // Preload comments for robust text/username search filtering
-        const commentsPromises = loadedPosts.map(async (pos) => {
-          try {
-            const res = await fetch(`/api/posts/${pos.id}/comments`);
-            if (res.ok) {
-              const data = await res.json();
-              return { postId: pos.id, comments: data };
-            }
-          } catch (err) {
-            console.error(err);
-          }
-          return { postId: pos.id, comments: [] };
-        });
+      // Preload comments for robust text/username search filtering
+      const commentsPromises = loadedPosts.map(async (pos) => {
+        try {
+          const data = await apiGetComments(pos.id);
+          return { postId: pos.id, comments: data };
+        } catch (err) {
+          console.error(err);
+        }
+        return { postId: pos.id, comments: [] };
+      });
 
-        const results = await Promise.all(commentsPromises);
-        const map: Record<string, Comment[]> = {};
-        results.forEach(res => {
-          map[res.postId] = res.comments;
-        });
-        setCommentsMap(map);
-      }
+      const results = await Promise.all(commentsPromises);
+      const map: Record<string, Comment[]> = {};
+      results.forEach(res => {
+        map[res.postId] = res.comments;
+      });
+      setCommentsMap(map);
     } catch (err: any) {
       setBoardError(err.message || "Something went wrong.");
     } finally {
@@ -104,11 +95,8 @@ export default function BoardView({ userId, onGoHome, onOwnerUnlocked }: BoardVi
 
   const loadComments = async (postId: string) => {
     try {
-      const res = await fetch(`/api/posts/${postId}/comments`);
-      if (res.ok) {
-        const data = await res.json();
-        setCommentsMap(prev => ({ ...prev, [postId]: data }));
-      }
+      const data = await apiGetComments(postId);
+      setCommentsMap(prev => ({ ...prev, [postId]: data }));
     } catch (err) {
       console.error("Error loading comments", err);
     }
@@ -127,18 +115,15 @@ export default function BoardView({ userId, onGoHome, onOwnerUnlocked }: BoardVi
     if (likedPosts.includes(postId)) return; // already liked
 
     try {
-      const res = await fetch(`/api/posts/${postId}/like`, { method: "POST" });
-      if (res.ok) {
-        const data = await res.json();
-        
-        // Update posts local state
-        setPosts(prev => prev.map(p => p.id === postId ? { ...p, likesCount: data.likesCount } : p));
-        
-        // Track liked state in local storage
-        const updatedLiked = [...likedPosts, postId];
-        setLikedPosts(updatedLiked);
-        localStorage.setItem("anon_liked_posts", JSON.stringify(updatedLiked));
-      }
+      const data = await apiLikePost(postId);
+      
+      // Update posts local state
+      setPosts(prev => prev.map(p => p.id === postId ? { ...p, likesCount: data.likesCount } : p));
+      
+      // Track liked state in local storage
+      const updatedLiked = [...likedPosts, postId];
+      setLikedPosts(updatedLiked);
+      localStorage.setItem("anon_liked_posts", JSON.stringify(updatedLiked));
     } catch (err) {
       console.error("Error liking post", err);
     }
@@ -151,13 +136,7 @@ export default function BoardView({ userId, onGoHome, onOwnerUnlocked }: BoardVi
 
     setAddingCommentMap(prev => ({ ...prev, [postId]: true }));
     try {
-      const res = await fetch(`/api/posts/${postId}/comments`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content: text }),
-      });
-
-      if (!res.ok) throw new Error("Failed to post comment.");
+      await apiCreateComment(postId, text);
 
       // Clear input
       setCommentInputs(prev => ({ ...prev, [postId]: "" }));
@@ -182,17 +161,7 @@ export default function BoardView({ userId, onGoHome, onOwnerUnlocked }: BoardVi
     }
 
     try {
-      const res = await fetch(`/api/users/${userId}/auth`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ pin: unlockPin }),
-      });
-
-      if (!res.ok) {
-        throw new Error("Invalid owner PIN. Lock remains active.");
-      }
-
-      const data = await res.json();
+      const data = await apiAuthUser(userId, unlockPin);
       onOwnerUnlocked({ ...data.user, isOwner: true });
       setShowUnlockModal(false);
     } catch (err: any) {
