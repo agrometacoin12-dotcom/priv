@@ -3,13 +3,15 @@ import { User } from "../types";
 import { Key, Plus, LogIn, Lock, ArrowRight, ShieldCheck, HelpCircle } from "lucide-react";
 import { motion } from "motion/react";
 import { apiCreateUser, apiAuthUser } from "../lib/api";
+import UserSearch from "./UserSearch";
 
 interface LandingViewProps {
   onAccountCreated: (user: User) => void;
   onAccountAccessed: (user: User) => void;
+  onSelectBoard: (userId: string) => void;
 }
 
-export default function LandingView({ onAccountCreated, onAccountAccessed }: LandingViewProps) {
+export default function LandingView({ onAccountCreated, onAccountAccessed, onSelectBoard }: LandingViewProps) {
   const [pinInput, setPinInput] = useState("");
   const [boardIdInput, setBoardIdInput] = useState("");
   const [errorSubmit, setErrorSubmit] = useState("");
@@ -217,6 +219,16 @@ export default function LandingView({ onAccountCreated, onAccountAccessed }: Lan
         </motion.div>
 
       </div>
+
+      {/* Search & Board Explorer space */}
+      <motion.div 
+        initial={{ opacity: 0, scale: 0.98 }}
+        animate={{ opacity: 1, scale: 1 }}
+        transition={{ delay: 0.4, duration: 0.4 }}
+        className="mt-10"
+      >
+        <UserSearch onSelectBoard={onSelectBoard} />
+      </motion.div>
 
       {/* Mini FAQ Section */}
       <div className="mt-14 border-t border-slate-100 pt-10 text-center">

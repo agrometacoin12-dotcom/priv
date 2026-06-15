@@ -448,3 +448,38 @@ export async function apiDeleteComment(commentId: string, userId: string, pin: s
     }
   );
 }
+
+// 13. Search users by nickname or ID
+export async function apiSearchUsers(query: string): Promise<User[]> {
+  return executeRequest(
+    () => fetchJSON(`/api/users/search?query=${encodeURIComponent(query)}`),
+    () => {
+      const db = getLocalDB();
+      const q = query.toLowerCase().trim();
+      if (!q) {
+        // Return public users up to 12
+        return db.users
+          .filter((u) => !u.isNicknamePrivate)
+          .slice(-12)
+          .map((u) => ({
+            id: u.id,
+            nickname: u.nickname,
+            isNicknamePrivate: u.isNicknamePrivate,
+            createdAt: u.createdAt,
+          }));
+      }
+      return db.users
+        .filter((u) => {
+          if (u.id.toLowerCase() === q) return true;
+          if (!u.isNicknamePrivate && u.nickname.toLowerCase().includes(q)) return true;
+          return false;
+        })
+        .map((u) => ({
+          id: u.id,
+          nickname: u.nickname,
+          isNicknamePrivate: u.isNicknamePrivate,
+          createdAt: u.createdAt,
+        }));
+    }
+  );
+}

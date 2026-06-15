@@ -16,6 +16,16 @@ export default function App() {
     // 1. Check for ?user=usr_xxx in query string
     const params = new URLSearchParams(window.location.search);
     const urlUser = params.get("user");
+    const urlPost = params.get("post");
+
+    if (urlUser && urlPost) {
+      // Save referenced post in localStorage so that it persists after signup/access!
+      try {
+        localStorage.setItem("anon_referred_post", JSON.stringify({ userId: urlUser, postId: urlPost }));
+      } catch (e) {
+        console.error("Failed to store referred post", e);
+      }
+    }
 
     // 2. Check for saved credentials in local storage
     let savedUser: User | null = null;
@@ -54,6 +64,7 @@ export default function App() {
     // Direct the owner to their brand new sharing link URL
     const url = new URL(window.location.href);
     url.searchParams.set("user", user.id);
+    url.searchParams.delete("post"); // Direct to dashboard clean
     window.history.pushState({}, "", url.toString());
   };
 
@@ -68,6 +79,7 @@ export default function App() {
     // Direct to board URL
     const url = new URL(window.location.href);
     url.searchParams.set("user", user.id);
+    url.searchParams.delete("post"); // Direct to dashboard clean
     window.history.pushState({}, "", url.toString());
     setViewedBoardId(user.id);
   };
@@ -77,6 +89,7 @@ export default function App() {
     setViewedBoardId(null);
     try {
       localStorage.removeItem("anon_current_user");
+      localStorage.removeItem("anon_referred_post"); // Clear referral on full log out/wipe
     } catch (e) {
       console.error(e);
     }
@@ -84,6 +97,7 @@ export default function App() {
     // Clear URL query parameters
     const url = new URL(window.location.href);
     url.searchParams.delete("user");
+    url.searchParams.delete("post");
     window.history.pushState({}, "", url.toString());
   };
 
@@ -96,11 +110,24 @@ export default function App() {
     }
   };
 
+  const handleSelectBoard = (userId: string, postId?: string) => {
+    setViewedBoardId(userId);
+    const url = new URL(window.location.href);
+    url.searchParams.set("user", userId);
+    if (postId) {
+      url.searchParams.set("post", postId);
+    } else {
+      url.searchParams.delete("post");
+    }
+    window.history.pushState({}, "", url.toString());
+  };
+
   const handleGoHome = () => {
     setViewedBoardId(null);
     // Keep user logged in if they have credentials, but clear active board viewing
     const url = new URL(window.location.href);
     url.searchParams.delete("user");
+    url.searchParams.delete("post");
     window.history.pushState({}, "", url.toString());
   };
 
@@ -155,13 +182,13 @@ export default function App() {
               </span>
             )}
 
-            {/* Quick action back to dashboard if logged-in but viewing home */}
-            {currentUser && !viewedBoardId && (
+            {/* Quick action back to dashboard if logged-in but viewing home or someone else's board */}
+            {currentUser && viewedBoardId !== currentUser.id && (
               <button
-                onClick={() => setViewedBoardId(currentUser.id)}
-                className="bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold py-1.5 px-3 rounded-full transition-all"
+                onClick={() => handleSelectBoard(currentUser.id)}
+                className="bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold py-1.5 px-3.5 rounded-full transition-all cursor-pointer whitespace-nowrap"
               >
-                Go to Dashboard
+                Go to My Dashboard
               </button>
             )}
           </div>
@@ -188,6 +215,7 @@ export default function App() {
                     setCurrentUser(updated);
                     localStorage.setItem("anon_current_user", JSON.stringify(updated));
                   }}
+                  onSelectBoard={handleSelectBoard}
                 />
               ) : (
                 // Guest viewing a shared link
@@ -195,6 +223,7 @@ export default function App() {
                   userId={viewedBoardId} 
                   onGoHome={handleGoHome}
                   onOwnerUnlocked={handleOwnerUnlockedFromBoard}
+                  onSelectBoard={handleSelectBoard}
                 />
               )
             ) : (
@@ -202,6 +231,7 @@ export default function App() {
               <LandingView 
                 onAccountCreated={handleCreateAccount}
                 onAccountAccessed={handleAccessAccount}
+                onSelectBoard={handleSelectBoard}
               />
             )}
           </motion.div>

@@ -151,6 +151,43 @@ async function startServer() {
     res.json({ success: true, user });
   });
 
+
+  // Search other users' public boards (or by ID)
+  app.get("/api/users/search", (req, res) => {
+    const { query } = req.query;
+    const db = loadDb();
+    
+    if (!query || typeof query !== "string") {
+      // Return a sample of active public accounts (up to 12)
+      const publicUsers = db.users
+        .filter((u) => !u.isNicknamePrivate)
+        .slice(-12)
+        .map((u) => ({
+          id: u.id,
+          nickname: u.nickname,
+          isNicknamePrivate: u.isNicknamePrivate,
+          createdAt: u.createdAt,
+        }));
+      return res.json(publicUsers);
+    }
+
+    const q = query.toLowerCase().trim();
+    const matched = db.users
+      .filter((u) => {
+        if (u.id.toLowerCase() === q) return true;
+        if (!u.isNicknamePrivate && u.nickname.toLowerCase().includes(q)) return true;
+        return false;
+      })
+      .map((u) => ({
+        id: u.id,
+        nickname: u.nickname,
+        isNicknamePrivate: u.isNicknamePrivate,
+        createdAt: u.createdAt,
+      }));
+
+    res.json(matched);
+  });
+
   // Get user profile (public info vs private ownership)
   app.get("/api/users/:userId", (req, res) => {
     const { userId } = req.params;

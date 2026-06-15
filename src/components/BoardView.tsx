@@ -3,21 +3,23 @@ import { User, Post, Comment } from "../types";
 import { 
   Heart, MessageSquare, CornerDownRight, Plus, ShieldCheck, 
   Sparkles, Compass, AlertCircle, RefreshCw, Key, Lock, ArrowRight,
-  ArrowLeft, CheckCircle2, Search, X
+  ArrowLeft, CheckCircle2, Search, X, Share2
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { 
   apiGetUser, apiGetPosts, apiGetComments, 
   apiLikePost, apiCreateComment, apiAuthUser 
 } from "../lib/api";
+import UserSearch from "./UserSearch";
 
 interface BoardViewProps {
   userId: string;
   onGoHome: () => void;
   onOwnerUnlocked: (user: User) => void;
+  onSelectBoard: (userId: string) => void;
 }
 
-export default function BoardView({ userId, onGoHome, onOwnerUnlocked }: BoardViewProps) {
+export default function BoardView({ userId, onGoHome, onOwnerUnlocked, onSelectBoard }: BoardViewProps) {
   const [profile, setProfile] = useState<User | null>(null);
   const [posts, setPosts] = useState<Post[]>([]);
   const [commentsMap, setCommentsMap] = useState<Record<string, Comment[]>>({});
@@ -32,6 +34,9 @@ export default function BoardView({ userId, onGoHome, onOwnerUnlocked }: BoardVi
   // Tracking likes in localStorage to prevent spamming
   const [likedPosts, setLikedPosts] = useState<string[]>([]);
   
+  // States for copy link success
+  const [copiedPostId, setCopiedPostId] = useState<string | null>(null);
+
   // States for entering lock PIN
   const [showUnlockModal, setShowUnlockModal] = useState(false);
   const [unlockPin, setUnlockPin] = useState("");
@@ -41,6 +46,34 @@ export default function BoardView({ userId, onGoHome, onOwnerUnlocked }: BoardVi
   const [loading, setLoading] = useState(true);
   const [boardError, setBoardError] = useState<string | null>(null);
   const [addingCommentMap, setAddingCommentMap] = useState<Record<string, boolean>>({});
+
+  const handleSharePost = (postId: string) => {
+    const postUrl = `${window.location.origin}/?user=${userId}&post=${postId}`;
+    try {
+      navigator.clipboard.writeText(postUrl);
+      setCopiedPostId(postId);
+      setTimeout(() => setCopiedPostId(null), 2000);
+    } catch (e) {
+      console.error("Clipboard failure", e);
+    }
+  };
+
+  // Handles auto scroll & expansion of post if coming from shared link
+  useEffect(() => {
+    if (!loading && posts.length > 0) {
+      const params = new URLSearchParams(window.location.search);
+      const postParam = params.get("post");
+      if (postParam && posts.some(p => p.id === postParam)) {
+        setExpandedCommentsPostId(postParam);
+        setTimeout(() => {
+          const el = document.getElementById(`post-card-${postParam}`);
+          if (el) {
+            el.scrollIntoView({ behavior: "smooth", block: "center" });
+          }
+        }, 600);
+      }
+    }
+  }, [loading, userId, posts]);
 
   // Sync profile & post data
   const loadBoardData = async () => {
@@ -349,12 +382,25 @@ export default function BoardView({ userId, onGoHome, onOwnerUnlocked }: BoardVi
                   const isExpanded = expandedCommentsPostId === post.id;
                   const comments = commentsMap[post.id] || [];
                   const textVal = commentInputs[post.id] || "";
+                  const isSharedHighlight = new URLSearchParams(window.location.search).get("post") === post.id;
 
                   return (
                     <div
                       key={post.id}
-                      className="bg-white border border-slate-100 rounded-2xl p-5 shadow-sm"
+                      id={`post-card-${post.id}`}
+                      className={`transition-all duration-500 rounded-2xl p-5 shadow-sm ${
+                        isSharedHighlight 
+                          ? "bg-brand-50/20 border-2 border-brand-500 ring-4 ring-brand-500/10 shadow-md" 
+                          : "bg-white border border-slate-100"
+                      }`}
                     >
+                      {/* Highlighted Shared Post badge */}
+                      {isSharedHighlight && (
+                        <div className="mb-3.5 inline-flex items-center gap-1 bg-brand-100 border border-brand-200 text-brand-800 text-[10px] font-bold uppercase tracking-wider px-2.5 py-1 rounded-lg">
+                          <span>📌 Highlighted Shared Post</span>
+                        </div>
+                      )}
+
                       {/* Metadata header */}
                       <div className="text-slate-400 font-mono text-[9px] uppercase tracking-wider mb-2">
                         Published {new Date(post.createdAt).toLocaleDateString()} @ {new Date(post.createdAt).toLocaleTimeString()}
@@ -365,8 +411,8 @@ export default function BoardView({ userId, onGoHome, onOwnerUnlocked }: BoardVi
                         {post.content}
                       </p>
 
-                      {/* Likings & Comment expansion */}
-                      <div className="flex items-center gap-4 pt-3 border-t border-slate-50 text-xs font-semibold">
+                      {/* Likings, Comment, and Share expansion */}
+                      <div className="flex flex-wrap items-center gap-2 pt-3 border-t border-slate-50 text-xs font-semibold">
                         
                         <button
                           onClick={() => handleLikePost(post.id)}
@@ -390,6 +436,22 @@ export default function BoardView({ userId, onGoHome, onOwnerUnlocked }: BoardVi
                         >
                           <MessageSquare className="w-4 h-4" />
                           <span>Comments {comments.length > 0 ? `(${comments.length})` : ""}</span>
+                        </button>
+
+                        <button
+                          onClick={() => handleSharePost(post.id)}
+                          className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg transition-all cursor-pointer ${
+                            copiedPostId === post.id
+                              ? "bg-emerald-50 text-emerald-700" 
+                              : "text-slate-500 hover:bg-slate-50 hover:text-slate-800"
+                          }`}
+                        >
+                          {copiedPostId === post.id ? (
+                            <CheckCircle2 className="w-4 h-4 text-emerald-505" />
+                          ) : (
+                            <Share2 className="w-4 h-4" />
+                          )}
+                          <span>{copiedPostId === post.id ? "Link Copied!" : "Share Post"}</span>
                         </button>
                       </div>
 
@@ -472,6 +534,11 @@ export default function BoardView({ userId, onGoHome, onOwnerUnlocked }: BoardVi
             )}
           </div>
         )}
+      </div>
+
+      {/* Browse other active boards */}
+      <div className="mt-12 border-t border-slate-100 pt-8">
+        <UserSearch onSelectBoard={onSelectBoard} />
       </div>
 
       {/* Bottom Footer block containing Private Owner Access Portal Unlock */}

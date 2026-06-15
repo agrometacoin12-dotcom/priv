@@ -3,23 +3,25 @@ import { User, Post, Comment } from "../types";
 import { 
   Lock, Share2, Copy, CheckCircle, Eye, EyeOff, Trash2, 
   Plus, MessageSquare, Heart, Shield, LogOut, Settings, 
-  MapPin, UserCheck, AlertCircle, RefreshCw, Key, QrCode
+  MapPin, UserCheck, AlertCircle, RefreshCw, Key, QrCode, Compass
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { 
   apiGetPosts, apiGetComments, apiCreatePost, apiDeletePost, 
   apiDeleteComment, apiToggleNickname, apiChangePin 
 } from "../lib/api";
+import UserSearch from "./UserSearch";
 
 interface DashboardViewProps {
   user: User;
   onLogout: () => void;
   onUpdateUser: (updatedUser: User) => void;
+  onSelectBoard: (userId: string, postId?: string) => void;
 }
 
-type TabType = "feed" | "profile";
+type TabType = "feed" | "profile" | "explore";
 
-export default function DashboardView({ user, onLogout, onUpdateUser }: DashboardViewProps) {
+export default function DashboardView({ user, onLogout, onUpdateUser, onSelectBoard }: DashboardViewProps) {
   const [activeTab, setActiveTab] = useState<TabType>("feed");
   const [posts, setPosts] = useState<Post[]>([]);
   const [commentsMap, setCommentsMap] = useState<Record<string, Comment[]>>({});
@@ -36,13 +38,53 @@ export default function DashboardView({ user, onLogout, onUpdateUser }: Dashboar
   
   // Utility states
   const [copied, setCopied] = useState(false);
+  const [copiedPostId, setCopiedPostId] = useState<string | null>(null);
   const [showPin, setShowPin] = useState(false);
   const [feedLoading, setFeedLoading] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [showQrModal, setShowQrModal] = useState(false);
 
+  // Suggested referred post tracking
+  const [referredPost, setReferredPost] = useState<{ userId: string; postId: string; authorNickname?: string } | null>(null);
+
   // Absolute direct URL path
   const directLinkUrl = `${window.location.origin}/?user=${user.id}`;
+
+  const handleSharePost = (postId: string) => {
+    const postUrl = `${window.location.origin}/?user=${user.id}&post=${postId}`;
+    try {
+      navigator.clipboard.writeText(postUrl);
+      setCopiedPostId(postId);
+      setTimeout(() => setCopiedPostId(null), 2000);
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  useEffect(() => {
+    const checkReferral = async () => {
+      try {
+        const saved = localStorage.getItem("anon_referred_post");
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          if (parsed.userId !== user.id) {
+            const { apiGetUser } = await import("../lib/api");
+            const author = await apiGetUser(parsed.userId);
+            setReferredPost({
+              userId: parsed.userId,
+              postId: parsed.postId,
+              authorNickname: author.nickname || "Anonymous Creator"
+            });
+          } else {
+            localStorage.removeItem("anon_referred_post");
+          }
+        }
+      } catch (e) {
+        console.error(e);
+      }
+    };
+    checkReferral();
+  }, [user.id]);
 
   const fetchPostsAndData = async () => {
     setFeedLoading(true);
@@ -246,7 +288,7 @@ export default function DashboardView({ user, onLogout, onUpdateUser }: Dashboar
       </div>
 
       {/* Tabs Switcher */}
-      <div className="border-b border-slate-100 mb-8 flex gap-6">
+      <div className="border-b border-slate-100 mb-8 flex flex-wrap gap-4 sm:gap-6">
         <button
           onClick={() => setActiveTab("feed")}
           className={`pb-3 font-display font-semibold text-sm relative transition-all cursor-pointer ${
@@ -270,6 +312,18 @@ export default function DashboardView({ user, onLogout, onUpdateUser }: Dashboar
             <motion.div layoutId="activeTabUnderline" className="absolute bottom-0 left-0 right-0 h-0.5 bg-brand-600" />
           )}
         </button>
+
+        <button
+          onClick={() => setActiveTab("explore")}
+          className={`pb-3 font-display font-semibold text-sm relative transition-all cursor-pointer ${
+            activeTab === "explore" ? "text-slate-900" : "text-slate-400 hover:text-slate-600"
+          }`}
+        >
+          Explore Other Boards
+          {activeTab === "explore" && (
+            <motion.div layoutId="activeTabUnderline" className="absolute bottom-0 left-0 right-0 h-0.5 bg-brand-600" />
+          )}
+        </button>
       </div>
 
       {/* Action Errors helper */}
@@ -286,6 +340,47 @@ export default function DashboardView({ user, onLogout, onUpdateUser }: Dashboar
         {/* TAB 1: FEED MODERATION */}
         {activeTab === "feed" && (
           <div className="space-y-6">
+
+            {referredPost && (
+              <div className="bg-gradient-to-r from-emerald-50 to-teal-50 border border-emerald-100 rounded-2xl p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-xs">
+                <div className="flex gap-2.5">
+                  <div className="bg-emerald-600 text-white rounded-lg p-1.5 shrink-0">
+                    <Compass className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <span className="text-xs font-bold text-slate-800">
+                      📍 Return to the Shared Post you were browsing
+                    </span>
+                    <p className="text-[11px] text-slate-500">
+                      You came from viewing a post by <span className="font-semibold text-emerald-700">{referredPost.authorNickname}</span> before accessing your portal!
+                    </p>
+                  </div>
+                </div>
+                <div className="flex gap-2 shrink-0">
+                  <button
+                    onClick={() => {
+                      onSelectBoard(referredPost.userId, referredPost.postId);
+                    }}
+                    className="bg-emerald-700 hover:bg-emerald-800 text-white font-semibold py-1.5 px-3.5 rounded-lg text-xs transition-all cursor-pointer whitespace-nowrap"
+                  >
+                    View Original Post
+                  </button>
+                  <button
+                    onClick={() => {
+                      try {
+                        localStorage.removeItem("anon_referred_post");
+                      } catch (err) {
+                        console.error(err);
+                      }
+                      setReferredPost(null);
+                    }}
+                    className="text-slate-400 hover:text-slate-600 text-xs font-semibold py-1.5 px-2 transition-all cursor-pointer whitespace-nowrap"
+                  >
+                    Dismiss
+                  </button>
+                </div>
+              </div>
+            )}
             
             {/* Create Box */}
             <form onSubmit={handleCreatePost} className="bg-white border border-slate-100 rounded-2xl p-5 shadow-sm">
@@ -388,8 +483,8 @@ export default function DashboardView({ user, onLogout, onUpdateUser }: Dashboar
                           </p>
 
                           {/* Actions Row */}
-                          <div className="flex items-center gap-4 pt-3 border-t border-slate-50 text-xs font-semibold text-slate-500">
-                            <div className="flex items-center gap-1.5 text-slate-400">
+                          <div className="flex flex-wrap items-center gap-2 pt-3 border-t border-slate-50 text-xs font-semibold text-slate-500">
+                            <div className="flex items-center gap-1.5 px-2.5 py-1.5 text-slate-400 bg-slate-50 border border-slate-100 rounded-lg">
                               <Heart className="w-4 h-4 text-rose-500 fill-rose-500" />
                               <span>{post.likesCount} Likes</span>
                             </div>
@@ -404,6 +499,23 @@ export default function DashboardView({ user, onLogout, onUpdateUser }: Dashboar
                             >
                               <MessageSquare className="w-4 h-4" />
                               <span>{isExpanded ? "Hide Comments" : `Comments (${comments.length})`}</span>
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => handleSharePost(post.id)}
+                              className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg transition-all cursor-pointer ${
+                                copiedPostId === post.id
+                                  ? "bg-emerald-50 text-emerald-700" 
+                                  : "hover:bg-slate-50 text-slate-500"
+                              }`}
+                            >
+                              {copiedPostId === post.id ? (
+                                <CheckCircle className="w-4 h-4 text-emerald-600" />
+                              ) : (
+                                <Share2 className="w-4 h-4" />
+                              )}
+                              <span>{copiedPostId === post.id ? "Link Copied!" : "Share Post"}</span>
                             </button>
                           </div>
 
@@ -632,6 +744,13 @@ export default function DashboardView({ user, onLogout, onUpdateUser }: Dashboar
               </form>
             </motion.div>
 
+          </div>
+        )}
+
+        {/* TAB 3: DISCOVERY DIRECTORY */}
+        {activeTab === "explore" && (
+          <div className="space-y-6">
+            <UserSearch onSelectBoard={onSelectBoard} currentUserId={user.id} />
           </div>
         )}
 
