@@ -1,0 +1,6 @@
+{
+  "name": "Anonymous Post Portal",
+  "description": "A completely anonymous sharing board. Create a portal, get a 4-digit PIN, share your link, and receive anonymous posts, likes, and comments securely.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
