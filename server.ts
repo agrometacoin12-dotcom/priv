@@ -135,6 +135,35 @@ async function startServer() {
     res.status(201).json(newUser);
   });
 
+  // PIN-only absolute access (get existing or automatically register new dashboard)
+  app.post("/api/users/auth-pin", (req, res) => {
+    const { pin } = req.body;
+    if (!pin || typeof pin !== "string" || pin.length !== 4 || isNaN(Number(pin))) {
+      return res.status(400).json({ error: "PIN must be a 4-digit number (0000-9999)" });
+    }
+
+    const db = loadDb();
+    let user = db.users.find((u) => u.pin === pin);
+    let isNew = false;
+
+    if (!user) {
+      isNew = true;
+      const id = generateId("usr");
+      const nickname = generateRandomNickname();
+      user = {
+        id,
+        nickname,
+        pin,
+        isNicknamePrivate: false,
+        createdAt: new Date().toISOString(),
+      };
+      db.users.push(user);
+      saveDb(db);
+    }
+
+    res.json({ success: true, user, isNew });
+  });
+
   // Verify PIN auth
   app.post("/api/users/:userId/auth", (req, res) => {
     const { userId } = req.params;

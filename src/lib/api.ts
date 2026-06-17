@@ -170,6 +170,38 @@ export async function apiAuthUser(userId: string, pin: string): Promise<{ succes
   );
 }
 
+// 2b. Auth or register user using PIN only
+export async function apiAuthByPin(pin: string): Promise<{ success: boolean; user: User; isNew: boolean }> {
+  return executeRequest(
+    () => fetchJSON("/api/users/auth-pin", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pin }),
+    }),
+    () => {
+      const db = getLocalDB();
+      // Find user with this PIN
+      let user = db.users.find((u) => u.pin === pin);
+      let isNew = false;
+      if (!user) {
+        isNew = true;
+        const id = generateLocalId("usr");
+        const nickname = generateRandomNickname();
+        user = {
+          id,
+          nickname,
+          pin,
+          isNicknamePrivate: false,
+          createdAt: new Date().toISOString(),
+        };
+        db.users.push(user);
+        saveLocalDB(db);
+      }
+      return { success: true, user: { ...user, isOwner: true }, isNew };
+    }
+  );
+}
+
 // 3. Get user details
 export async function apiGetUser(userId: string, pinValue?: string): Promise<User> {
   return executeRequest(

@@ -1,8 +1,8 @@
 import React, { useState } from "react";
 import { User } from "../types";
-import { Key, Plus, LogIn, Lock, ArrowRight, ShieldCheck, HelpCircle } from "lucide-react";
+import { Key, Lock, ArrowRight, ShieldCheck, HelpCircle, UserCheck } from "lucide-react";
 import { motion } from "motion/react";
-import { apiCreateUser, apiAuthUser } from "../lib/api";
+import { apiAuthByPin } from "../lib/api";
 import UserSearch from "./UserSearch";
 
 interface LandingViewProps {
@@ -13,64 +13,51 @@ interface LandingViewProps {
 
 export default function LandingView({ onAccountCreated, onAccountAccessed, onSelectBoard }: LandingViewProps) {
   const [pinInput, setPinInput] = useState("");
-  const [boardIdInput, setBoardIdInput] = useState("");
   const [errorSubmit, setErrorSubmit] = useState("");
   const [loading, setLoading] = useState(false);
   const [showGuide, setShowGuide] = useState(false);
 
-  const handleCreate = async () => {
-    setLoading(true);
-    setErrorSubmit("");
-    try {
-      const data = await apiCreateUser();
-      onAccountCreated(data);
-    } catch (err: any) {
-      setErrorSubmit(err.message || "Something went wrong.");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleAccess = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setErrorSubmit("");
-
-    // Simple parser for board link if they paste the full URL
-    let cleanId = boardIdInput.trim();
-    if (cleanId.includes("user=")) {
-      const match = cleanId.match(/user=([^&]+)/);
-      if (match) cleanId = match[1];
-    } else if (cleanId.includes("/")) {
-      const parts = cleanId.split("/");
-      const last = parts[parts.length - 1];
-      if (last.startsWith("usr_")) cleanId = last;
-    }
-
-    if (!cleanId.startsWith("usr_")) {
-      setErrorSubmit("Please enter a valid Account ID or copy your full profile link.");
-      return;
-    }
-
-    if (pinInput.length !== 4 || isNaN(Number(pinInput))) {
+  const handleSubmitPin = async (pinValue: string) => {
+    if (pinValue.length !== 4 || isNaN(Number(pinValue))) {
       setErrorSubmit("PIN must be exactly 4 digits.");
       return;
     }
 
     setLoading(true);
+    setErrorSubmit("");
     try {
-      const data = await apiAuthUser(cleanId, pinInput);
-      onAccountAccessed({ ...data.user, isOwner: true });
+      const data = await apiAuthByPin(pinValue);
+      if (data.isNew) {
+        onAccountCreated(data.user);
+      } else {
+        onAccountAccessed(data.user);
+      }
     } catch (err: any) {
-      setErrorSubmit(err.message || "Credentials verification failed.");
+      setErrorSubmit(err.message || "Authentication failed. Please try again.");
     } finally {
       setLoading(false);
     }
   };
 
+  const handleTextChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const val = e.target.value.replace(/\D/g, "");
+    if (val.length <= 4) {
+      setPinInput(val);
+      if (val.length === 4) {
+        handleSubmitPin(val);
+      }
+    }
+  };
+
+  const handleFormSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    handleSubmitPin(pinInput);
+  };
+
   return (
     <div id="landing-root" className="max-w-4xl mx-auto px-4 py-8 md:py-16">
       {/* Header Visual and Title */}
-      <div className="text-center mb-12">
+      <div className="text-center mb-10">
         <motion.div 
           initial={{ scale: 0.8, opacity: 0 }}
           animate={{ scale: 1, opacity: 1 }}
@@ -88,9 +75,9 @@ export default function LandingView({ onAccountCreated, onAccountAccessed, onSel
         >
           Anonymous Post Portal
         </motion.h1>
-        
+         
         <motion.p 
-          className="text-lg text-slate-500 max-w-xl mx-auto font-normal leading-relaxed"
+          className="text-base md:text-lg text-slate-500 max-w-xl mx-auto font-normal leading-relaxed"
           initial={{ y: 15, opacity: 0 }}
           animate={{ y: 0, opacity: 1 }}
           transition={{ delay: 0.2, duration: 0.5 }}
@@ -99,173 +86,118 @@ export default function LandingView({ onAccountCreated, onAccountAccessed, onSel
         </motion.p>
       </div>
 
-      {/* Main Column Grid */}
-      <div className="grid md:grid-cols-2 gap-8 items-start">
-        
-        {/* Create Card */}
-        <motion.div 
-          initial={{ x: -20, opacity: 0 }}
-          animate={{ x: 0, opacity: 1 }}
+      {/* Main Single Column/Bento Layout */}
+      <div className="max-w-md mx-auto">
+        <motion.div
+          initial={{ y: 25, opacity: 0 }}
+          animate={{ y: 0, opacity: 1 }}
           transition={{ delay: 0.3, duration: 0.5 }}
-          className="bg-white border border-slate-100 rounded-2xl p-6 md:p-8 shadow-sm hover:shadow-md transition-all h-full flex flex-col justify-between"
+          className="bg-white border border-slate-100 rounded-3xl p-6 md:p-8 shadow-md hover:shadow-lg transition-all"
         >
-          <div>
-            <div className="flex items-center justify-between mb-4">
-              <span className="text-xs font-mono tracking-wider font-semibold text-brand-700 uppercase bg-brand-50 px-2.5 py-1 rounded-full">
-                Anonymous Quick Start
-              </span>
-              <Plus className="w-5 h-5 text-slate-400" />
-            </div>
-            <h2 className="text-2xl font-display font-semibold text-slate-800 mb-2">
-              Generate New Portal
-            </h2>
-            <p className="text-slate-500 text-sm mb-6 leading-relaxed">
-              We will generate a fully unique, secure board for you instantly. To guarantee total absolute anonymity, you will be assigned a random animal nickname and a 4-digit PIN lock. 
-            </p>
-            
-            <div className="space-y-4 mb-8 bg-slate-50 p-4 rounded-xl border border-slate-100">
-              <div className="flex items-start gap-3">
-                <ShieldCheck className="w-5 h-5 text-emerald-600 shrink-0 mt-0.5" />
-                <div className="text-xs text-slate-600">
-                  <span className="font-semibold text-slate-800">Zero Signups Required:</span> No email or phone is stored. Your identity stays completely locked away.
-                </div>
-              </div>
-              <div className="flex items-start gap-3">
-                <Key className="w-5 h-5 text-brand-600 shrink-0 mt-0.5" />
-                <div className="text-xs text-slate-600">
-                  <span className="font-semibold text-slate-800">Protected Moderation:</span> Your 4-digit PIN is the ONLY way to verify ownership and delete posts/comments.
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <button
-            onClick={handleCreate}
-            disabled={loading}
-            className="w-full bg-slate-900 border border-slate-900 hover:bg-slate-800 text-white font-medium py-3 px-6 rounded-xl inline-flex items-center justify-center gap-2 transition-all cursor-pointer disabled:opacity-50"
-          >
-            {loading ? "Generating Safe Portal..." : "Create My Portal"}
-            <ArrowRight className="w-4 h-4" />
-          </button>
-        </motion.div>
-
-        {/* Access Existing Portal Form */}
-        <motion.div 
-          initial={{ x: 20, opacity: 0 }}
-          animate={{ x: 0, opacity: 1 }}
-          transition={{ delay: 0.3, duration: 0.5 }}
-          className="bg-white border border-slate-100 rounded-2xl p-6 md:p-8 shadow-sm hover:shadow-md transition-all h-full"
-        >
-          <div className="flex items-center justify-between mb-4">
-            <span className="text-xs font-mono tracking-wider font-semibold text-teal-700 uppercase bg-teal-50 px-2.5 py-1 rounded-full">
-              Already Have a Board?
+          <div className="text-center mb-6">
+            <span className="text-[10px] font-mono tracking-wider font-bold text-brand-700 uppercase bg-brand-50 px-3 py-1 rounded-full">
+              🔑 PIN-Only Instant Access
             </span>
-            <LogIn className="w-5 h-5 text-slate-400" />
+            <h2 className="text-xl font-semibold text-slate-850 mt-3">
+              Enter 4-Digit Owner PIN
+            </h2>
+            <p className="text-slate-400 text-xs mt-1 leading-relaxed">
+              If the PIN exists, we'll open your dashboard. If brand new, we'll immediately initialize a secure new board with that PIN!
+            </p>
           </div>
-          <h2 className="text-2xl font-display font-semibold text-slate-800 mb-2">
-            Access My Portal
-          </h2>
-          <p className="text-slate-500 text-sm mb-6">
-            Enter your board account link or Account ID alongside your 4-digit numeric PIN to manage your board.
-          </p>
 
-          <form onSubmit={handleAccess} className="space-y-4">
-            <div>
-              <label className="block text-xs font-semibold text-slate-600 uppercase tracking-wider mb-2">
-                Account ID or Direct Link
-              </label>
+          <form onSubmit={handleFormSubmit} className="space-y-5">
+            <div className="relative">
               <input
                 type="text"
-                placeholder="e.g. usr_a1b2c3d4 or paste direct URL"
-                value={boardIdInput}
-                onChange={(e) => setBoardIdInput(e.target.value)}
-                required
-                className="w-full bg-slate-50 border border-slate-200 focus:border-brand-600 focus:bg-white focus:outline-none rounded-xl px-4 py-2.5 text-sm transition-all"
-              />
-            </div>
-
-            <div>
-              <label className="block text-xs font-semibold text-slate-600 uppercase tracking-wider mb-2">
-                Your 4-Digit Owner PIN
-              </label>
-              <input
-                type="password"
                 maxLength={4}
                 pattern="[0-9]*"
                 inputMode="numeric"
-                placeholder="••••"
+                placeholder="• • • •"
                 value={pinInput}
-                onChange={(e) => setPinInput(e.target.value.replace(/\D/g, ''))}
-                required
-                className="w-full bg-slate-50 border border-slate-200 focus:border-brand-600 focus:bg-white focus:outline-none rounded-xl px-4 py-2.5 text-sm font-mono tracking-wider text-center text-lg transition-all"
+                onChange={handleTextChange}
+                disabled={loading}
+                autoFocus
+                className="w-full tracking-[1.5em] text-center font-mono text-3xl font-bold bg-slate-50 border border-slate-200 focus:border-brand-600 focus:bg-white focus:outline-none rounded-2xl py-3.5 px-4 transition-all focus:ring-4 focus:ring-brand-100 select-all placeholder-slate-305"
               />
             </div>
 
             {errorSubmit && (
-              <p className="text-xs font-medium text-rose-500 bg-rose-50 border border-rose-100 p-3 rounded-lg">
-                ⚠️ {errorSubmit}
-              </p>
+              <motion.div 
+                initial={{ opacity: 0, y: -5 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="text-xs font-semibold text-rose-500 bg-rose-50 border border-rose-100 p-3 rounded-xl flex items-start gap-1.5"
+              >
+                <span>⚠️ {errorSubmit}</span>
+              </motion.div>
             )}
 
             <button
               type="submit"
-              disabled={loading}
-              className="w-full bg-brand-600 hover:bg-brand-700 text-white font-medium py-3 px-6 rounded-xl inline-flex items-center justify-center gap-2 transition-all cursor-pointer disabled:opacity-50 mt-2"
+              disabled={loading || pinInput.length !== 4}
+              className="w-full bg-slate-900 border border-slate-900 hover:bg-slate-800 text-white font-semibold py-3 px-6 rounded-xl inline-flex items-center justify-center gap-2 transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed text-xs uppercase tracking-wider"
             >
-              {loading ? "Verifying Keys..." : "Unlock Portal Dashboard"}
-              <Lock className="w-4 h-4" />
+              {loading ? "Authenticating & Initializing..." : "Unlock or Create Board"}
+              <ArrowRight className="w-4 h-4" />
             </button>
           </form>
+
+          {/* Privacy Protection Banner inside Card */}
+          <div className="mt-5 pt-5 border-t border-slate-100 flex items-start gap-2.5">
+            <ShieldCheck className="w-5 h-5 text-emerald-600 shrink-0 mt-0.5" />
+            <div className="text-[11px] text-slate-500 leading-relaxed">
+              <strong className="text-slate-700">Fully Private:</strong> Pins are salted and compared in server-side memory. Absolutely no email address, cookies, or names are ever tracked or recorded.
+            </div>
+          </div>
         </motion.div>
 
-      </div>
-
-      {/* Search & Board Explorer space */}
-      <motion.div 
-        initial={{ opacity: 0, scale: 0.98 }}
-        animate={{ opacity: 1, scale: 1 }}
-        transition={{ delay: 0.4, duration: 0.4 }}
-        className="mt-10"
-      >
-        <UserSearch onSelectBoard={onSelectBoard} />
-      </motion.div>
-
-      {/* Mini FAQ Section */}
-      <div className="mt-14 border-t border-slate-100 pt-10 text-center">
-        <button
-          onClick={() => setShowGuide(!showGuide)}
-          className="inline-flex items-center gap-1.5 text-slate-400 hover:text-slate-600 text-sm font-medium transition-all focus:outline-none cursor-pointer"
+        {/* Search / Explore Section */}
+        <motion.div 
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ delay: 0.4 }}
+          className="mt-8"
         >
-          <HelpCircle className="w-4 h-4" />
-          {showGuide ? "Hide How It Works" : "How does this remain fully anonymous?"}
-        </button>
+          <UserSearch onSelectBoard={onSelectBoard} />
+        </motion.div>
 
-        {showGuide && (
-          <motion.div 
-            initial={{ opacity: 0, y: -10 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="mt-6 text-left bg-slate-50 border border-slate-100 rounded-2xl p-6 text-slate-600 space-y-4 max-w-2xl mx-auto"
+        {/* Helpful Guide Toggle */}
+        <div className="mt-12 text-center">
+          <button
+            onClick={() => setShowGuide(!showGuide)}
+            className="inline-flex items-center gap-1.5 text-slate-400 hover:text-slate-600 text-xs font-semibold transition-all focus:outline-none cursor-pointer"
           >
-            <div>
-              <h4 className="font-semibold text-slate-800 text-sm mb-1">How is my identity private?</h4>
-              <p className="text-xs leading-relaxed">
-                Nothing about your device details, real names, or emails is requested. When you generate a board, the server assigns a random alias (e.g. "Silent Koala"). The portal URL has a completely random secret path.
-              </p>
-            </div>
-            <div>
-              <h4 className="font-semibold text-slate-800 text-sm mb-1">What can visitors do?</h4>
-              <p className="text-xs leading-relaxed">
-                Anyone visiting your shared link can view posts, press like, and add comments. You receive them inside your dashboard immediately. They will also be completely anonymous—when commenting, visitors are issued a fun, temporary pseudonym like "Inquisitive Wanderer".
-              </p>
-            </div>
-            <div>
-              <h4 className="font-semibold text-slate-800 text-sm mb-1">What is the PIN for?</h4>
-              <p className="text-xs leading-relaxed">
-                The 4-digit PIN serves as your cryptographic authority. This allows you—and ONLY you—to add posts, delete any unauthorized comment or post, and toggle whether your random nickname is displayed to visitors or fully hidden.
-              </p>
-            </div>
-          </motion.div>
-        )}
+            <HelpCircle className="w-4 h-4" />
+            {showGuide ? "Hide Security Guide" : "How does PIN-only authorization remain secure?"}
+          </button>
+
+          {showGuide && (
+            <motion.div 
+              initial={{ opacity: 0, y: -10 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="mt-4 text-left bg-slate-50 border border-slate-100 rounded-2xl p-5 text-slate-600 space-y-4 shadow-inner"
+            >
+              <div>
+                <h4 className="font-semibold text-slate-800 text-xs mb-1">🔑 Pin-Only Entry</h4>
+                <p className="text-[11px] leading-relaxed text-slate-500">
+                  You no longer need to remember complex user tokens, usernames, or link hashes. Pick any clean 4-digit code. Keep it secret – it is your exclusive security credential.
+                </p>
+              </div>
+              <div>
+                <h4 className="font-semibold text-slate-800 text-xs mb-1">🐾 Generated Board Persona</h4>
+                <p className="text-[11px] leading-relaxed text-slate-500">
+                  Once registered with your unique PIN, we map a completely random secure board prefix to you and assign a fun, random animal nickname (e.g. "Gentle Otter"). Your real location data is fully sanitized.
+                </p>
+              </div>
+              <div>
+                <h4 className="font-semibold text-slate-800 text-xs mb-1">🗨️ Custom Followers Link</h4>
+                <p className="text-[11px] leading-relaxed text-slate-500">
+                  Sharing your "Secure Followers" link lets other users comment, like, and interact without seeing your administration widgets or requiring them to guess passwords.
+                </p>
+              </div>
+            </motion.div>
+          )}
+        </div>
       </div>
     </div>
   );
