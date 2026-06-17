@@ -20,6 +20,7 @@ interface Post {
   userId: string; // author user id
   content: string;
   likesCount: number;
+  reactions?: Record<string, number>;
   createdAt: string;
 }
 
@@ -35,6 +36,7 @@ interface DatabaseStructure {
   users: User[];
   posts: Post[];
   comments: Comment[];
+  follows?: { followerId: string; followedId: string; createdAt: string }[];
 }
 
 // Initial/default DB structure
@@ -42,6 +44,7 @@ const initialDb: DatabaseStructure = {
   users: [],
   posts: [],
   comments: [],
+  follows: [],
 };
 
 // Help load/save functions for DB
@@ -188,6 +191,84 @@ async function startServer() {
     res.json(matched);
   });
 
+  // --- GLOBAL POST FEED & FOLLOW ROUTING ---
+
+  // Get all posts from all users with their author info
+  app.get("/api/global-posts", (req, res) => {
+    const db = loadDb();
+    const postsWithUsers = db.posts.map((post) => {
+      const author = db.users.find((u) => u.id === post.userId);
+      return {
+        ...post,
+        authorNickname: author ? (author.isNicknamePrivate ? "Anonymous Creator" : author.nickname) : "Anonymous Creator",
+        authorId: post.userId,
+      };
+    });
+    // Sort latest first
+    postsWithUsers.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    res.json(postsWithUsers);
+  });
+
+  // Follow / Subscribe to another user's board
+  app.post("/api/users/:userId/follow", (req, res) => {
+    const { userId } = req.params; // Creator being followed
+    const { followerId } = req.body; // Visitor user doing the follow
+
+    if (!followerId) {
+      return res.status(400).json({ error: "Follower ID is required" });
+    }
+
+    const db = loadDb();
+    if (!db.follows) {
+      db.follows = [];
+    }
+
+    const creator = db.users.find((u) => u.id === userId);
+    if (!creator) {
+      return res.status(404).json({ error: "Creator board not found" });
+    }
+
+    const alreadyFollowed = db.follows.some((f) => f.followerId === followerId && f.followedId === userId);
+    let followed = false;
+    if (alreadyFollowed) {
+      db.follows = db.follows.filter((f) => !(f.followerId === followerId && f.followedId === userId));
+    } else {
+      db.follows.push({
+        followerId,
+        followedId: userId,
+        createdAt: new Date().toISOString(),
+      });
+      followed = true;
+    }
+
+    saveDb(db);
+    res.json({ 
+      success: true, 
+      followed, 
+      followersCount: db.follows.filter((f) => f.followedId === userId).length 
+    });
+  });
+
+  // Check relationship & get info
+  app.get("/api/users/:userId/follow-status", (req, res) => {
+    const { userId } = req.params;
+    const { followerId } = req.query;
+
+    const db = loadDb();
+    if (!db.follows) {
+      db.follows = [];
+    }
+
+    const followersCount = db.follows.filter((f) => f.followedId === userId).length;
+    const isFollowing = followerId && typeof followerId === "string"
+      ? db.follows.some((f) => f.followerId === followerId && f.followedId === userId)
+      : false;
+
+    res.json({ followersCount, isFollowing });
+  });
+
+  // --- END OF GLOBAL POST FEED & FOLLOW ROUTING ---
+
   // Get user profile (public info vs private ownership)
   app.get("/api/users/:userId", (req, res) => {
     const { userId } = req.params;
@@ -314,6 +395,7 @@ async function startServer() {
       userId,
       content,
       likesCount: 0,
+      reactions: {},
       createdAt: new Date().toISOString(),
     };
 
@@ -337,6 +419,33 @@ async function startServer() {
     saveDb(db);
 
     res.json({ success: true, likesCount: post.likesCount });
+  });
+
+  // React to a post with an emoji
+  app.post("/api/posts/:postId/react", (req, res) => {
+    const { postId } = req.params;
+    const { emoji } = req.body;
+
+    if (!emoji || typeof emoji !== "string") {
+      return res.status(400).json({ error: "Emoji is required" });
+    }
+
+    const db = loadDb();
+    const post = db.posts.find((p) => p.id === postId);
+    if (!post) {
+      return res.status(404).json({ error: "Post not found" });
+    }
+
+    if (!post.reactions) {
+      post.reactions = {};
+    }
+
+    post.reactions[emoji] = (post.reactions[emoji] || 0) + 1;
+    post.likesCount += 1; // Keep grand total updated
+
+    saveDb(db);
+
+    res.json({ success: true, likesCount: post.likesCount, reactions: post.reactions });
   });
 
   // Get comments of a post

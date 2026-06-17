@@ -39,6 +39,7 @@ interface LocalDB {
   users: User[];
   posts: Post[];
   comments: Comment[];
+  follows?: any[];
 }
 
 function getLocalDB(): LocalDB {
@@ -46,10 +47,11 @@ function getLocalDB(): LocalDB {
     const users = JSON.parse(localStorage.getItem("anon_local_users") || "[]");
     const posts = JSON.parse(localStorage.getItem("anon_local_posts") || "[]");
     const comments = JSON.parse(localStorage.getItem("anon_local_comments") || "[]");
-    return { users, posts, comments };
+    const follows = JSON.parse(localStorage.getItem("anon_local_follows") || "[]");
+    return { users, posts, comments, follows };
   } catch (err) {
     console.error("Error reading localStorage database, restoring empty lists", err);
-    return { users: [], posts: [], comments: [] };
+    return { users: [], posts: [], comments: [], follows: [] };
   }
 }
 
@@ -58,6 +60,7 @@ function saveLocalDB(db: LocalDB) {
     localStorage.setItem("anon_local_users", JSON.stringify(db.users));
     localStorage.setItem("anon_local_posts", JSON.stringify(db.posts));
     localStorage.setItem("anon_local_comments", JSON.stringify(db.comments));
+    localStorage.setItem("anon_local_follows", JSON.stringify(db.follows || []));
   } catch (err) {
     console.error("Failed saving to browser storage", err);
   }
@@ -304,6 +307,7 @@ export async function apiCreatePost(userId: string, pin: string, content: string
         userId,
         content,
         likesCount: 0,
+        reactions: {},
         createdAt: new Date().toISOString(),
       };
       
@@ -329,6 +333,35 @@ export async function apiLikePost(postId: string): Promise<{ success: boolean; l
       post.likesCount += 1;
       saveLocalDB(db);
       return { success: true, likesCount: post.likesCount };
+    }
+  );
+}
+
+// 8b. React to a post with an emoji
+export async function apiReactToPost(postId: string, emoji: string): Promise<{ success: boolean; likesCount: number; reactions: Record<string, number> }> {
+  return executeRequest(
+    () => fetchJSON(`/api/posts/${postId}/react`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ emoji }),
+    }),
+    () => {
+      const db = getLocalDB();
+      const post = db.posts.find((p) => p.id === postId);
+      
+      if (!post) {
+        throw new Error("Post not found");
+      }
+      
+      if (!post.reactions) {
+        post.reactions = {};
+      }
+      
+      post.reactions[emoji] = (post.reactions[emoji] || 0) + 1;
+      post.likesCount += 1;
+      
+      saveLocalDB(db);
+      return { success: true, likesCount: post.likesCount, reactions: post.reactions };
     }
   );
 }
@@ -480,6 +513,88 @@ export async function apiSearchUsers(query: string): Promise<User[]> {
           isNicknamePrivate: u.isNicknamePrivate,
           createdAt: u.createdAt,
         }));
+    }
+  );
+}
+
+// --- GLOBAL BOARD FEED & FOLLOW FUNCTIONS ---
+
+export interface GlobalPost extends Post {
+  authorNickname: string;
+  authorId: string;
+}
+
+export interface FollowStatus {
+  followersCount: number;
+  isFollowing: boolean;
+}
+
+// 14. Get all posts with author details
+export async function apiGetGlobalPosts(): Promise<GlobalPost[]> {
+  return executeRequest(
+    () => fetchJSON("/api/global-posts"),
+    () => {
+      const db = getLocalDB();
+      const postsWithUsers = db.posts.map((post) => {
+        const author = db.users.find((u) => u.id === post.userId);
+        return {
+          ...post,
+          authorNickname: author ? (author.isNicknamePrivate ? "Anonymous Creator" : author.nickname) : "Anonymous Creator",
+          authorId: post.userId,
+        };
+      });
+      postsWithUsers.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+      return postsWithUsers;
+    }
+  );
+}
+
+// 15. Follow or Subscribe to a board creator
+export async function apiFollowUser(followedId: string, followerId: string): Promise<{ success: boolean; followed: boolean; followersCount: number }> {
+  return executeRequest(
+    () => fetchJSON(`/api/users/${followedId}/follow`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ followerId }),
+    }),
+    () => {
+      const db = getLocalDB();
+      if (!db.follows) {
+        db.follows = [];
+      }
+      const alreadyFollowed = db.follows.some((f) => f.followerId === followerId && f.followedId === followedId);
+      let followed = false;
+      if (alreadyFollowed) {
+        db.follows = db.follows.filter((f) => !(f.followerId === followerId && f.followedId === followedId));
+      } else {
+        db.follows.push({
+          followerId,
+          followedId,
+          createdAt: new Date().toISOString(),
+        });
+        followed = true;
+      }
+      saveLocalDB(db);
+      return { success: true, followed, followersCount: db.follows.filter((f) => f.followedId === followedId).length };
+    }
+  );
+}
+
+// 16. Fetch relationship and subscribe count
+export async function apiGetFollowStatus(followedId: string, followerId?: string): Promise<FollowStatus> {
+  return executeRequest(
+    () => {
+      const url = followerId ? `/api/users/${followedId}/follow-status?followerId=${followerId}` : `/api/users/${followedId}/follow-status`;
+      return fetchJSON(url);
+    },
+    () => {
+      const db = getLocalDB();
+      if (!db.follows) {
+        db.follows = [];
+      }
+      const count = db.follows.filter((f) => f.followedId === followedId).length;
+      const isFollowing = followerId ? db.follows.some((f) => f.followerId === followerId && f.followedId === followedId) : false;
+      return { followersCount: count, isFollowing };
     }
   );
 }

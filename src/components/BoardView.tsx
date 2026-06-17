@@ -3,12 +3,13 @@ import { User, Post, Comment } from "../types";
 import { 
   Heart, MessageSquare, CornerDownRight, Plus, ShieldCheck, 
   Sparkles, Compass, AlertCircle, RefreshCw, Key, Lock, ArrowRight,
-  ArrowLeft, CheckCircle2, Search, X, Share2
+  ArrowLeft, CheckCircle2, Search, X, Share2, Bell, BellOff, UserPlus
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { 
   apiGetUser, apiGetPosts, apiGetComments, 
-  apiLikePost, apiCreateComment, apiAuthUser 
+  apiLikePost, apiCreateComment, apiAuthUser,
+  apiReactToPost, apiFollowUser, apiGetFollowStatus
 } from "../lib/api";
 import UserSearch from "./UserSearch";
 
@@ -19,8 +20,47 @@ interface BoardViewProps {
   onSelectBoard: (userId: string) => void;
 }
 
+const EMOJI_LIST = ["❤️", "🔥", "👏", "😂", "😮", "😢"];
+
+const getReactionCount = (post: Post, emoji: string): number => {
+  const rx = post.reactions || {};
+  if (rx[emoji] !== undefined) {
+    return rx[emoji];
+  }
+  // Fallback for pre-existing posts with likesCount but no custom reaction map
+  if (emoji === "❤️") {
+    const hasOtherCustomReactions = Object.values(rx).some(v => v > 0);
+    return hasOtherCustomReactions ? 0 : post.likesCount;
+  }
+  return 0;
+};
+
 export default function BoardView({ userId, onGoHome, onOwnerUnlocked, onSelectBoard }: BoardViewProps) {
   const [profile, setProfile] = useState<User | null>(null);
+  const [followersCount, setFollowersCount] = useState<number>(0);
+  const [isFollowing, setIsFollowing] = useState<boolean>(false);
+  const [togglingFollow, setTogglingFollow] = useState<boolean>(false);
+
+  // Get or generate a persistent local visitor ID
+  const getVisitorId = (): string => {
+    let saved = "";
+    try {
+      const u = localStorage.getItem("anon_current_user");
+      if (u) {
+        const parsed = JSON.parse(u);
+        if (parsed?.id) return parsed.id;
+      }
+    } catch {}
+    try {
+      saved = localStorage.getItem("anon_visitor_id") || "";
+      if (!saved) {
+        saved = `vst_${Math.random().toString(36).substring(2, 11)}`;
+        localStorage.setItem("anon_visitor_id", saved);
+      }
+    } catch {}
+    return saved || "anonymous_visitor";
+  };
+
   const [posts, setPosts] = useState<Post[]>([]);
   const [commentsMap, setCommentsMap] = useState<Record<string, Comment[]>>({});
   
@@ -34,6 +74,10 @@ export default function BoardView({ userId, onGoHome, onOwnerUnlocked, onSelectB
   // Tracking likes in localStorage to prevent spamming
   const [likedPosts, setLikedPosts] = useState<string[]>([]);
   
+  // Tracking user's custom emoji mapping per post
+  const [userReactions, setUserReactions] = useState<Record<string, string[]>>({});
+  const [openReactMenuPostId, setOpenReactMenuPostId] = useState<string | null>(null);
+  
   // States for copy link success
   const [copiedPostId, setCopiedPostId] = useState<string | null>(null);
 
@@ -46,6 +90,9 @@ export default function BoardView({ userId, onGoHome, onOwnerUnlocked, onSelectB
   const [loading, setLoading] = useState(true);
   const [boardError, setBoardError] = useState<string | null>(null);
   const [addingCommentMap, setAddingCommentMap] = useState<Record<string, boolean>>({});
+
+  // Check if loaded via Follow Mode URL parameter
+  const isFollowMode = typeof window !== "undefined" && new URLSearchParams(window.location.search).get("mode") === "follow";
 
   const handleSharePost = (postId: string) => {
     const postUrl = `${window.location.origin}/?user=${userId}&post=${postId}`;
@@ -106,6 +153,16 @@ export default function BoardView({ userId, onGoHome, onOwnerUnlocked, onSelectB
         map[res.postId] = res.comments;
       });
       setCommentsMap(map);
+
+      // 3. Sync Subscriber / Follow connection
+      try {
+        const vid = getVisitorId();
+        const status = await apiGetFollowStatus(userId, vid);
+        setFollowersCount(status.followersCount);
+        setIsFollowing(status.isFollowing);
+      } catch (fErr) {
+        console.error("Could not load subscriber metadata", fErr);
+      }
     } catch (err: any) {
       setBoardError(err.message || "Something went wrong.");
     } finally {
@@ -113,13 +170,32 @@ export default function BoardView({ userId, onGoHome, onOwnerUnlocked, onSelectB
     }
   };
 
+  const handleToggleFollow = async () => {
+    if (togglingFollow) return;
+    setTogglingFollow(true);
+    try {
+      const vid = getVisitorId();
+      const res = await apiFollowUser(userId, vid);
+      setIsFollowing(res.followed);
+      setFollowersCount(res.followersCount);
+    } catch (err) {
+      console.error("Error toggling follow", err);
+    } finally {
+      setTogglingFollow(false);
+    }
+  };
+
   useEffect(() => {
     loadBoardData();
-    // Load liked posts from localStorage
+    // Load liked posts and emoji reactions from localStorage
     try {
       const saved = localStorage.getItem("anon_liked_posts");
       if (saved) {
         setLikedPosts(JSON.parse(saved));
+      }
+      const savedReactions = localStorage.getItem("anon_post_reactions");
+      if (savedReactions) {
+        setUserReactions(JSON.parse(savedReactions));
       }
     } catch (e) {
       console.error(e);
@@ -144,22 +220,48 @@ export default function BoardView({ userId, onGoHome, onOwnerUnlocked, onSelectB
     }
   };
 
-  const handleLikePost = async (postId: string) => {
-    if (likedPosts.includes(postId)) return; // already liked
+  const handleReactToPost = async (postId: string, emoji: string) => {
+    const currentPostReactions = userReactions[postId] || [];
+    if (currentPostReactions.includes(emoji)) return; // Already reacted with this emoji
 
     try {
-      const data = await apiLikePost(postId);
+      const data = await apiReactToPost(postId, emoji);
       
       // Update posts local state
-      setPosts(prev => prev.map(p => p.id === postId ? { ...p, likesCount: data.likesCount } : p));
+      setPosts(prev => prev.map(p => {
+        if (p.id === postId) {
+          return {
+            ...p,
+            likesCount: data.likesCount,
+            reactions: data.reactions
+          };
+        }
+        return p;
+      }));
+
+      // Track reacted state in local storage
+      const updatedReactions = {
+        ...userReactions,
+        [postId]: [...currentPostReactions, emoji]
+      };
+      setUserReactions(updatedReactions);
+      localStorage.setItem("anon_post_reactions", JSON.stringify(updatedReactions));
       
-      // Track liked state in local storage
-      const updatedLiked = [...likedPosts, postId];
-      setLikedPosts(updatedLiked);
-      localStorage.setItem("anon_liked_posts", JSON.stringify(updatedLiked));
+      // Also register as "liked" if it was a heart to stay backward-compatible
+      if (emoji === "❤️" && !likedPosts.includes(postId)) {
+        const updatedLiked = [...likedPosts, postId];
+        setLikedPosts(updatedLiked);
+        localStorage.setItem("anon_liked_posts", JSON.stringify(updatedLiked));
+      }
+
+      setOpenReactMenuPostId(null);
     } catch (err) {
-      console.error("Error liking post", err);
+      console.error("Error reacting to post", err);
     }
+  };
+
+  const handleLikePost = async (postId: string) => {
+    await handleReactToPost(postId, "❤️");
   };
 
   const handleAddComment = async (postId: string, e: React.FormEvent) => {
@@ -263,7 +365,13 @@ export default function BoardView({ userId, onGoHome, onOwnerUnlocked, onSelectB
       </button>
 
       {/* Board Welcome Banner for Visitors */}
-      <div className="bg-white border border-slate-100 rounded-2xl p-6 shadow-sm text-center mb-8">
+      <div className="bg-white border border-slate-100 rounded-2xl p-6 shadow-sm text-center mb-8 relative overflow-hidden">
+        {isFollowMode && (
+          <div className="bg-emerald-950 border-b border-emerald-800 text-white py-1.5 px-4 text-[10px] font-sans font-bold flex items-center justify-center gap-1.5 -mx-6 -mt-6 mb-5 select-none text-center">
+            <Lock className="w-3 h-3 text-emerald-400" />
+            <span>Viewing as Secure Subscriber (Zero-Access Safeguarded Mode)</span>
+          </div>
+        )}
         <span className="inline-flex items-center gap-1 text-[10px] font-mono tracking-widest uppercase font-bold text-teal-600 bg-teal-50 px-2.5 py-1 rounded-full mb-3">
           <ShieldCheck className="w-3.5 h-3.5 text-teal-600" />
           Secure Anonymous Connection
@@ -273,8 +381,33 @@ export default function BoardView({ userId, onGoHome, onOwnerUnlocked, onSelectB
         <h2 className="text-3xl font-display font-bold text-slate-900 mb-1">
           {profile.isNicknamePrivate ? "Anonymous Board" : `${profile.nickname}`}
         </h2>
+
+        {/* Subscribe / Follow Button & Subscriber statistics */}
+        <div className="flex flex-col items-center gap-2 mb-4 mt-3">
+          <button
+            onClick={handleToggleFollow}
+            disabled={togglingFollow}
+            className={`inline-flex items-center gap-2 px-5 py-2 rounded-full font-semibold text-xs border transition-all shadow-sm cursor-pointer ${
+              isFollowing
+                ? "bg-slate-100 border-slate-200 text-slate-700 hover:bg-slate-200"
+                : "bg-brand-600 border-brand-700 text-white hover:bg-brand-700 hover:scale-105 active:scale-95"
+            }`}
+          >
+            {isFollowing ? <BellOff className="w-3.5 h-3.5 text-slate-500" /> : <Bell className="w-3.5 h-3.5" />}
+            <span>{isFollowing ? "Unsubscribe" : "Subscribe / Follow Board"}</span>
+          </button>
+          
+          <span className="text-[11px] font-mono text-slate-400 font-medium">
+            🔔 {followersCount} {followersCount === 1 ? "Subscriber" : "Subscribers"}
+          </span>
+        </div>
         
         <p className="text-xs text-slate-400 mb-4 max-w-sm mx-auto leading-relaxed">
+          {isFollowMode && (
+            <span className="block text-[11px] bg-slate-50 border border-slate-200/50 p-2.5 rounded-xl text-slate-500 mb-3 text-left leading-relaxed">
+              🔒 <strong className="text-slate-700">Follow Mode privacy guard active:</strong> This link protects your private access. You are viewing public posts and can safely leave comments and reacts, but the private moderate PIN portal is completely hidden.
+            </span>
+          )}
           {profile.isNicknamePrivate 
             ? "This creator keeps their profile alias strictly hidden. Leave feedback, likes, and comments securely."
             : "Browse this creator's public board, drop sweet feedback, or comments anonymously."}
@@ -411,27 +544,90 @@ export default function BoardView({ userId, onGoHome, onOwnerUnlocked, onSelectB
                         {post.content}
                       </p>
 
-                      {/* Likings, Comment, and Share expansion */}
+                      {/* Reactions & Interaction Action Row */}
                       <div className="flex flex-wrap items-center gap-2 pt-3 border-t border-slate-50 text-xs font-semibold">
                         
-                        <button
-                          onClick={() => handleLikePost(post.id)}
-                          className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg transition-all cursor-pointer ${
-                            hasLiked 
-                              ? "text-rose-600 bg-rose-50" 
-                              : "text-slate-500 hover:bg-slate-50 hover:text-slate-800"
-                          }`}
-                        >
-                          <Heart className={`w-4 h-4 ${hasLiked ? "fill-rose-500 text-rose-500 font-bold" : ""}`} />
-                          <span>{post.likesCount} {hasLiked ? "Liked!" : "Like"}</span>
-                        </button>
+                        {/* Render active post reactions */}
+                        {EMOJI_LIST.map((emoji) => {
+                          const count = getReactionCount(post, emoji);
+                          const hasReacted = (userReactions[post.id] || []).includes(emoji) || (emoji === "❤️" && hasLiked);
+                          
+                          if (count === 0 && !hasReacted) return null;
+                          
+                          return (
+                            <button
+                              key={emoji}
+                              disabled={hasReacted}
+                              onClick={() => handleReactToPost(post.id, emoji)}
+                              className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-full border transition-all cursor-pointer ${
+                                hasReacted
+                                  ? "bg-slate-100 border-slate-200 text-slate-800 opacity-85"
+                                  : "bg-white hover:bg-slate-50 border-slate-100 text-slate-600 hover:text-slate-800"
+                              }`}
+                              title={hasReacted ? "You registered this reaction" : `Add reaction ${emoji}`}
+                            >
+                              <span>{emoji}</span>
+                              <span className="font-mono text-xs font-bold text-slate-700">{count}</span>
+                            </button>
+                          );
+                        })}
+
+                        {/* Reaction Picker Trigger Button */}
+                        <div className="relative">
+                          <button
+                            type="button"
+                            onClick={() => setOpenReactMenuPostId(openReactMenuPostId === post.id ? null : post.id)}
+                            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border transition-all cursor-pointer ${
+                              openReactMenuPostId === post.id 
+                                ? "bg-brand-50 border-brand-200 text-brand-700" 
+                                : "bg-white border-slate-200 text-slate-500 hover:bg-slate-50 hover:text-slate-800"
+                            }`}
+                          >
+                            <span className="text-sm">💬</span>
+                            <span>React</span>
+                          </button>
+
+                          {/* Floating menu bubble */}
+                          <AnimatePresence>
+                            {openReactMenuPostId === post.id && (
+                              <>
+                                <div 
+                                  className="fixed inset-0 z-20" 
+                                  onClick={() => setOpenReactMenuPostId(null)} 
+                                />
+                                <motion.div
+                                  initial={{ opacity: 0, scale: 0.95, y: 4 }}
+                                  animate={{ opacity: 1, scale: 1, y: 0 }}
+                                  exit={{ opacity: 0, scale: 0.95, y: 4 }}
+                                  className="absolute left-0 bottom-full mb-2.5 z-30 bg-white border border-slate-200 shadow-xl rounded-2xl p-2 flex items-center gap-1.5 whitespace-nowrap"
+                                >
+                                  {EMOJI_LIST.map((emoji) => {
+                                    const hasReacted = (userReactions[post.id] || []).includes(emoji) || (emoji === "❤️" && hasLiked);
+                                    return (
+                                      <button
+                                        key={emoji}
+                                        type="button"
+                                        disabled={hasReacted}
+                                        onClick={() => handleReactToPost(post.id, emoji)}
+                                        className="text-lg p-2 rounded-xl transition-all hover:scale-125 hover:bg-slate-50 disabled:opacity-30 disabled:pointer-events-none active:scale-90 cursor-pointer"
+                                        title={`React ${emoji}`}
+                                      >
+                                        {emoji}
+                                      </button>
+                                    );
+                                  })}
+                                </motion.div>
+                              </>
+                            )}
+                          </AnimatePresence>
+                        </div>
 
                         <button
                           onClick={() => handleToggleComments(post.id)}
-                          className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg transition-all cursor-pointer ${
+                          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full border transition-all cursor-pointer ${
                             isExpanded 
-                              ? "bg-brand-50 text-brand-700" 
-                              : "text-slate-500 hover:bg-slate-50 hover:text-slate-800"
+                              ? "bg-brand-50 border-brand-200 text-brand-700" 
+                              : "bg-white border-slate-200 text-slate-500 hover:bg-slate-50 hover:text-slate-800"
                           }`}
                         >
                           <MessageSquare className="w-4 h-4" />
@@ -440,18 +636,18 @@ export default function BoardView({ userId, onGoHome, onOwnerUnlocked, onSelectB
 
                         <button
                           onClick={() => handleSharePost(post.id)}
-                          className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg transition-all cursor-pointer ${
+                          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full border transition-all cursor-pointer ${
                             copiedPostId === post.id
-                              ? "bg-emerald-50 text-emerald-700" 
-                              : "text-slate-500 hover:bg-slate-50 hover:text-slate-800"
+                              ? "bg-emerald-50 border-emerald-200 text-emerald-700" 
+                              : "bg-white border-slate-200 text-slate-500 hover:bg-slate-50 hover:text-slate-800"
                           }`}
                         >
                           {copiedPostId === post.id ? (
-                            <CheckCircle2 className="w-4 h-4 text-emerald-505" />
+                            <CheckCircle2 className="w-4 h-4 text-emerald-600" />
                           ) : (
                             <Share2 className="w-4 h-4" />
                           )}
-                          <span>{copiedPostId === post.id ? "Link Copied!" : "Share Post"}</span>
+                          <span>{copiedPostId === post.id ? "Copied!" : "Share"}</span>
                         </button>
                       </div>
 
@@ -542,15 +738,17 @@ export default function BoardView({ userId, onGoHome, onOwnerUnlocked, onSelectB
       </div>
 
       {/* Bottom Footer block containing Private Owner Access Portal Unlock */}
-      <div className="mt-16 border-t border-slate-100 pt-8 text-center pb-12">
-        <button
-          onClick={() => setShowUnlockModal(true)}
-          className="inline-flex items-center gap-1.5 text-slate-400 hover:text-slate-700 text-xs font-semibold py-1 px-3.5 bg-slate-50 border border-slate-100 rounded-xl transition-all hover:bg-slate-100 cursor-pointer focus:outline-none"
-        >
-          <Key className="w-3.5 h-3.5 text-indigo-500 animate-pulse" />
-          Manage Board (Owner PIN Access)
-        </button>
-      </div>
+      {!isFollowMode && (
+        <div className="mt-16 border-t border-slate-100 pt-8 text-center pb-12">
+          <button
+            onClick={() => setShowUnlockModal(true)}
+            className="inline-flex items-center gap-1.5 text-slate-400 hover:text-slate-700 text-xs font-semibold py-1 px-3.5 bg-slate-50 border border-slate-100 rounded-xl transition-all hover:bg-slate-100 cursor-pointer focus:outline-none"
+          >
+            <Key className="w-3.5 h-3.5 text-indigo-500 animate-pulse" />
+            Manage Board (Owner PIN Access)
+          </button>
+        </div>
+      )}
 
       {/* Unlock Owner Modal Dialog */}
       <AnimatePresence>

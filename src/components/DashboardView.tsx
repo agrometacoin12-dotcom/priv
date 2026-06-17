@@ -3,12 +3,13 @@ import { User, Post, Comment } from "../types";
 import { 
   Lock, Share2, Copy, CheckCircle, Eye, EyeOff, Trash2, 
   Plus, MessageSquare, Heart, Shield, LogOut, Settings, 
-  MapPin, UserCheck, AlertCircle, RefreshCw, Key, QrCode, Compass
+  MapPin, UserCheck, AlertCircle, RefreshCw, Key, QrCode, Compass, Bell, BellOff, ArrowRight
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { 
   apiGetPosts, apiGetComments, apiCreatePost, apiDeletePost, 
-  apiDeleteComment, apiToggleNickname, apiChangePin 
+  apiDeleteComment, apiToggleNickname, apiChangePin, apiReactToPost,
+  apiGetGlobalPosts, apiFollowUser, apiGetFollowStatus, apiCreateComment, GlobalPost
 } from "../lib/api";
 import UserSearch from "./UserSearch";
 
@@ -19,7 +20,21 @@ interface DashboardViewProps {
   onSelectBoard: (userId: string, postId?: string) => void;
 }
 
-type TabType = "feed" | "profile" | "explore";
+const EMOJI_LIST = ["❤️", "🔥", "👏", "😂", "😮", "😢"];
+
+const getReactionCount = (post: Post, emoji: string): number => {
+  const rx = post.reactions || {};
+  if (rx[emoji] !== undefined) {
+    return rx[emoji];
+  }
+  if (emoji === "❤️") {
+    const hasOtherCustomReactions = Object.values(rx).some(v => v > 0);
+    return hasOtherCustomReactions ? 0 : post.likesCount;
+  }
+  return 0;
+};
+
+type TabType = "feed" | "post_feed" | "profile" | "explore";
 
 export default function DashboardView({ user, onLogout, onUpdateUser, onSelectBoard }: DashboardViewProps) {
   const [activeTab, setActiveTab] = useState<TabType>("feed");
@@ -38,17 +53,94 @@ export default function DashboardView({ user, onLogout, onUpdateUser, onSelectBo
   
   // Utility states
   const [copied, setCopied] = useState(false);
+  const [copiedFollow, setCopiedFollow] = useState(false);
+  const [qrUrl, setQrUrl] = useState<string>("");
   const [copiedPostId, setCopiedPostId] = useState<string | null>(null);
+  const [userReactions, setUserReactions] = useState<Record<string, string[]>>({});
+  const [openReactMenuPostId, setOpenReactMenuPostId] = useState<string | null>(null);
   const [showPin, setShowPin] = useState(false);
   const [feedLoading, setFeedLoading] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [showQrModal, setShowQrModal] = useState(false);
+
+  // --- GLOBAL POST FEED HOST STATES & HANDLERS ---
+  const [globalPosts, setGlobalPosts] = useState<GlobalPost[]>([]);
+  const [feedFilter, setFeedFilter] = useState<"all" | "following">("all");
+  const [followingMap, setFollowingMap] = useState<Record<string, boolean>>({});
+  const [loadingGlobalFeed, setLoadingGlobalFeed] = useState(false);
+  const [commentFeedInputs, setCommentFeedInputs] = useState<Record<string, string>>({});
+  const [addingCommentGlobalMap, setAddingCommentGlobalMap] = useState<Record<string, boolean>>({});
+
+  const loadGlobalFeed = async () => {
+    setLoadingGlobalFeed(true);
+    setActionError(null);
+    try {
+      const allPosts = await apiGetGlobalPosts();
+      setGlobalPosts(allPosts);
+
+      const uniqueCreators = Array.from(new Set(allPosts.map((p) => p.authorId)));
+      const followMap: Record<string, boolean> = {};
+      
+      for (const creatorId of uniqueCreators) {
+        if (creatorId === user.id) {
+          followMap[creatorId] = false;
+          continue;
+        }
+        try {
+          const status = await apiGetFollowStatus(creatorId, user.id);
+          followMap[creatorId] = status.isFollowing;
+        } catch (err) {
+          console.error(`Error loading follow status for creator ${creatorId}`, err);
+        }
+      }
+      setFollowingMap(followMap);
+    } catch (err: any) {
+      setActionError("Failed to charge global community post timeline.");
+    } finally {
+      setLoadingGlobalFeed(false);
+    }
+  };
+
+  const handleToggleFollowGlobal = async (followedId: string) => {
+    try {
+      const res = await apiFollowUser(followedId, user.id);
+      setFollowingMap((prev) => ({ ...prev, [followedId]: res.followed }));
+    } catch (err) {
+      console.error("Error toggling follow", err);
+    }
+  };
+
+  const handleAddCommentGlobal = async (postId: string, e: React.FormEvent) => {
+    e.preventDefault();
+    const text = commentFeedInputs[postId]?.trim();
+    if (!text) return;
+
+    setAddingCommentGlobalMap((prev) => ({ ...prev, [postId]: true }));
+    try {
+      await apiCreateComment(postId, text);
+      const cms = await apiGetComments(postId);
+      setCommentsMap((prev) => ({ ...prev, [postId]: cms }));
+      setCommentFeedInputs((prev) => ({ ...prev, [postId]: "" }));
+    } catch (err) {
+      console.error("Error adding comment in global feed", err);
+    } finally {
+      setAddingCommentGlobalMap((prev) => ({ ...prev, [postId]: false }));
+    }
+  };
+
+  useEffect(() => {
+    if (activeTab === "post_feed") {
+      loadGlobalFeed();
+    }
+  }, [activeTab]);
+  // --- END OF GLOBAL POST FEED HOST STATES & HANDLERS ---
 
   // Suggested referred post tracking
   const [referredPost, setReferredPost] = useState<{ userId: string; postId: string; authorNickname?: string } | null>(null);
 
   // Absolute direct URL path
   const directLinkUrl = `${window.location.origin}/?user=${user.id}`;
+  const followLinkUrl = `${window.location.origin}/?user=${user.id}&mode=follow`;
 
   const handleSharePost = (postId: string) => {
     const postUrl = `${window.location.origin}/?user=${user.id}&post=${postId}`;
@@ -86,6 +178,17 @@ export default function DashboardView({ user, onLogout, onUpdateUser, onSelectBo
     checkReferral();
   }, [user.id]);
 
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem("anon_post_reactions");
+      if (saved) {
+        setUserReactions(JSON.parse(saved));
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  }, []);
+
   const fetchPostsAndData = async () => {
     setFeedLoading(true);
     setActionError(null);
@@ -110,6 +213,39 @@ export default function DashboardView({ user, onLogout, onUpdateUser, onSelectBo
       setCommentsMap(prev => ({ ...prev, [postId]: comments }));
     } catch (err) {
       console.error("Error loading comments", err);
+    }
+  };
+
+  const handleReactToPost = async (postId: string, emoji: string) => {
+    const currentPostReactions = userReactions[postId] || [];
+    if (currentPostReactions.includes(emoji)) return;
+
+    try {
+      const data = await apiReactToPost(postId, emoji);
+      
+      // Update posts local state
+      setPosts(prev => prev.map(p => {
+        if (p.id === postId) {
+          return {
+            ...p,
+            likesCount: data.likesCount,
+            reactions: data.reactions
+          };
+        }
+        return p;
+      }));
+
+      // Track reacted state in local storage
+      const updatedReactions = {
+        ...userReactions,
+        [postId]: [...currentPostReactions, emoji]
+      };
+      setUserReactions(updatedReactions);
+      localStorage.setItem("anon_post_reactions", JSON.stringify(updatedReactions));
+      
+      setOpenReactMenuPostId(null);
+    } catch (err) {
+      console.error("Error reacting to post", err);
     }
   };
 
@@ -200,6 +336,12 @@ export default function DashboardView({ user, onLogout, onUpdateUser, onSelectBo
     setTimeout(() => setCopied(false), 2000);
   };
 
+  const handleCopyFollowLink = () => {
+    navigator.clipboard.writeText(followLinkUrl);
+    setCopiedFollow(true);
+    setTimeout(() => setCopiedFollow(false), 2000);
+  };
+
   return (
     <div id="dashboard-root" className="max-w-4xl mx-auto px-4 py-6 md:py-10">
       
@@ -249,39 +391,117 @@ export default function DashboardView({ user, onLogout, onUpdateUser, onSelectBo
             </p>
           </div>
 
-          <div className="w-full md:w-auto flex-1 max-w-md bg-slate-50 border border-slate-100 rounded-xl p-3.5">
-            <span className="block text-xs font-semibold text-slate-600 uppercase tracking-wider mb-2">
-              Your Shareable Board Link
-            </span>
-            <div className="flex flex-col sm:flex-row gap-2">
-              <input
-                type="text"
-                readOnly
-                value={directLinkUrl}
-                className="bg-white border border-slate-200 select-all rounded-lg px-3 py-1.5 text-xs text-slate-500 font-mono w-full focus:outline-none"
-              />
-              <div className="flex gap-2 shrink-0">
-                <button
-                  onClick={handleCopyLink}
-                  className={`px-3 py-1.5 rounded-lg border text-xs font-semibold flex items-center gap-1 cursor-pointer transition-all flex-1 sm:flex-initial justify-center ${
-                    copied 
-                      ? "bg-emerald-50 border-emerald-200 text-emerald-700" 
-                      : "bg-white border-slate-200 hover:bg-slate-50 text-slate-700"
-                  }`}
-                >
-                  {copied ? <CheckCircle className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
-                  {copied ? "Copied" : "Copy"}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setShowQrModal(true)}
-                  className="px-3 py-1.5 bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 rounded-lg text-xs font-semibold flex items-center gap-1 cursor-pointer transition-all flex-1 sm:flex-initial justify-center"
-                  title="Generate sharing QR Code"
-                >
-                  <QrCode className="w-3.5 h-3.5 text-slate-500" />
-                  <span>QR Code</span>
-                </button>
+          <div className="w-full md:w-auto flex-1 max-w-xl bg-slate-50 border border-slate-100 rounded-2xl p-5 space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-200 pb-3">
+              <span className="block text-xs font-bold text-slate-700 uppercase tracking-wider">
+                📢 Share Options & Follow Links
+              </span>
+              <span className="text-[10px] bg-brand-100 text-brand-700 px-2.5 py-0.5 rounded-full font-sans font-bold">
+                Zero-Access Guarded
+              </span>
+            </div>
+
+            {/* Link Option 1: SECURE FOLLOW LINK */}
+            <div className="space-y-1">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-semibold text-slate-850 flex items-center gap-1.5">
+                  🌐 Secure Follower Link
+                  <span className="text-[9px] bg-emerald-100 text-emerald-800 font-bold px-1.5 py-0.5 rounded uppercase tracking-wide">
+                    Highly Recommended
+                  </span>
+                </span>
               </div>
+              <p className="text-[11px] text-slate-400">
+                Omit private moderate entry keys entirely. Safest way to gain subscribers and share social posts securely.
+              </p>
+              <div className="flex flex-col sm:flex-row gap-2 pt-1">
+                <input
+                  type="text"
+                  readOnly
+                  value={followLinkUrl}
+                  className="bg-white border border-slate-200 select-all rounded-lg px-3 py-1.5 text-xs text-slate-500 font-mono w-full focus:outline-none"
+                />
+                <div className="flex gap-2 shrink-0">
+                  <button
+                    onClick={handleCopyFollowLink}
+                    className={`px-3 py-1.5 rounded-lg border text-xs font-semibold flex items-center gap-1 cursor-pointer transition-all flex-1 sm:flex-initial justify-center ${
+                      copiedFollow 
+                        ? "bg-emerald-50 border-emerald-200 text-emerald-700" 
+                        : "bg-white border-slate-200 hover:bg-slate-50 text-slate-700"
+                    }`}
+                  >
+                    {copiedFollow ? <CheckCircle className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                    {copiedFollow ? "Copied" : "Copy"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { setQrUrl(followLinkUrl); setShowQrModal(true); }}
+                    className="px-3 py-1.5 bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 rounded-lg text-xs font-semibold flex items-center gap-1 cursor-pointer transition-all flex-1 sm:flex-initial justify-center"
+                    title="Generate Follower QR Code"
+                  >
+                    <QrCode className="w-3.5 h-3.5 text-slate-505" />
+                    <span>QR</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* Link Option 2: DIRECT ADMIN ACCESS LINK */}
+            <div className="space-y-1 pt-3 border-t border-slate-200/60">
+              <span className="block text-xs font-semibold text-slate-800">
+                🔑 Direct Board Link (With admin prompt)
+              </span>
+              <p className="text-[11px] text-slate-400">
+                Displays private PIN login footer at bottom. Keep this private if you do not want others probing for password cracks.
+              </p>
+              <div className="flex flex-col sm:flex-row gap-2 pt-1">
+                <input
+                  type="text"
+                  readOnly
+                  value={directLinkUrl}
+                  className="bg-white border border-slate-200 select-all rounded-lg px-3 py-1.5 text-xs text-slate-500 font-mono w-full focus:outline-none"
+                />
+                <div className="flex gap-2 shrink-0">
+                  <button
+                    onClick={handleCopyLink}
+                    className={`px-3 py-1.5 rounded-lg border text-xs font-semibold flex items-center gap-1 cursor-pointer transition-all flex-1 sm:flex-initial justify-center ${
+                      copied 
+                        ? "bg-emerald-50 border-emerald-200 text-emerald-700" 
+                        : "bg-white border-slate-200 hover:bg-slate-50 text-slate-700"
+                    }`}
+                  >
+                    {copied ? <CheckCircle className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                    {copied ? "Copied" : "Copy"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { setQrUrl(directLinkUrl); setShowQrModal(true); }}
+                    className="px-3 py-1.5 bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 rounded-lg text-xs font-semibold flex items-center gap-1 cursor-pointer transition-all flex-1 sm:flex-initial justify-center"
+                    title="Generate Direct Board QR Code"
+                  >
+                    <QrCode className="w-3.5 h-3.5 text-slate-505" />
+                    <span>QR</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* Privacy Implications Explanation banner */}
+            <div className="bg-slate-900 border border-slate-800 p-4 rounded-xl space-y-1.5 mt-2 shadow-inner">
+              <div className="flex items-center gap-1.5">
+                <span className="text-amber-400 text-xs font-bold font-sans">⚠️ Privacy implications of Sharing:</span>
+              </div>
+              <ul className="text-[10px] text-slate-300 font-sans space-y-1 pl-3.5 list-disc leading-relaxed">
+                <li>
+                  <strong className="text-white">Isolate Private Session:</strong> In <span className="text-emerald-400">Secure Follow Link</span>, the owner moderate access button is completely omitted. No one can ever gain unauthorized access to edit your settings or view secrets.
+                </li>
+                <li>
+                  <strong className="text-white">Public Audience Scope:</strong> Anyone possessing this link can look up your board, view all public posts, respond via emoji, and add anonymous timeline comments.
+                </li>
+                <li>
+                  <strong className="text-white">Alias Protection:</strong> Your Board nickname is visible. Toggle <em className="text-indigo-300">"Private Alias Mode"</em> in settings anytime to show up fully as an "Anonymous Creator", shielding your local metadata.
+                </li>
+              </ul>
             </div>
           </div>
         </div>
@@ -302,13 +522,13 @@ export default function DashboardView({ user, onLogout, onUpdateUser, onSelectBo
         </button>
 
         <button
-          onClick={() => setActiveTab("profile")}
+          onClick={() => setActiveTab("post_feed")}
           className={`pb-3 font-display font-semibold text-sm relative transition-all cursor-pointer ${
-            activeTab === "profile" ? "text-slate-900" : "text-slate-400 hover:text-slate-600"
+            activeTab === "post_feed" ? "text-slate-900" : "text-slate-400 hover:text-slate-600"
           }`}
         >
-          Security & Identity Locks
-          {activeTab === "profile" && (
+          Post Feed Hub
+          {activeTab === "post_feed" && (
             <motion.div layoutId="activeTabUnderline" className="absolute bottom-0 left-0 right-0 h-0.5 bg-brand-600" />
           )}
         </button>
@@ -321,6 +541,18 @@ export default function DashboardView({ user, onLogout, onUpdateUser, onSelectBo
         >
           Explore Other Boards
           {activeTab === "explore" && (
+            <motion.div layoutId="activeTabUnderline" className="absolute bottom-0 left-0 right-0 h-0.5 bg-brand-600" />
+          )}
+        </button>
+
+        <button
+          onClick={() => setActiveTab("profile")}
+          className={`pb-3 font-display font-semibold text-sm relative transition-all cursor-pointer ${
+            activeTab === "profile" ? "text-slate-900" : "text-slate-400 hover:text-slate-600"
+          }`}
+        >
+          Security & Identity Locks
+          {activeTab === "profile" && (
             <motion.div layoutId="activeTabUnderline" className="absolute bottom-0 left-0 right-0 h-0.5 bg-brand-600" />
           )}
         </button>
@@ -484,17 +716,88 @@ export default function DashboardView({ user, onLogout, onUpdateUser, onSelectBo
 
                           {/* Actions Row */}
                           <div className="flex flex-wrap items-center gap-2 pt-3 border-t border-slate-50 text-xs font-semibold text-slate-500">
-                            <div className="flex items-center gap-1.5 px-2.5 py-1.5 text-slate-400 bg-slate-50 border border-slate-100 rounded-lg">
-                              <Heart className="w-4 h-4 text-rose-500 fill-rose-500" />
-                              <span>{post.likesCount} Likes</span>
+                            
+                            {/* Render active post reactions */}
+                            {EMOJI_LIST.map((emoji) => {
+                              const count = getReactionCount(post, emoji);
+                              const hasReacted = (userReactions[post.id] || []).includes(emoji);
+                              
+                              if (count === 0 && !hasReacted) return null;
+                              
+                              return (
+                                <button
+                                  key={emoji}
+                                  disabled={hasReacted}
+                                  onClick={() => handleReactToPost(post.id, emoji)}
+                                  className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-full border transition-all cursor-pointer ${
+                                    hasReacted
+                                      ? "bg-slate-100 border-slate-200 text-slate-800 opacity-85"
+                                      : "bg-white hover:bg-slate-50 border-slate-100 text-slate-600 hover:text-slate-800"
+                                  }`}
+                                  title={hasReacted ? "You registered this reaction" : `Add reaction ${emoji}`}
+                                >
+                                  <span>{emoji}</span>
+                                  <span className="font-mono text-xs font-bold text-slate-700">{count}</span>
+                                </button>
+                              );
+                            })}
+
+                            {/* Reaction Picker Trigger Button */}
+                            <div className="relative">
+                              <button
+                                type="button"
+                                onClick={() => setOpenReactMenuPostId(openReactMenuPostId === post.id ? null : post.id)}
+                                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border transition-all cursor-pointer ${
+                                  openReactMenuPostId === post.id 
+                                    ? "bg-brand-50 border-brand-200 text-brand-700" 
+                                    : "bg-white border-slate-200 text-slate-500 hover:bg-slate-50 hover:text-slate-800"
+                                }`}
+                              >
+                                <span className="text-sm">💬</span>
+                                <span>React</span>
+                              </button>
+
+                              {/* Floating menu bubble */}
+                              <AnimatePresence>
+                                {openReactMenuPostId === post.id && (
+                                  <>
+                                    <div 
+                                      className="fixed inset-0 z-20" 
+                                      onClick={() => setOpenReactMenuPostId(null)} 
+                                    />
+                                    <motion.div
+                                      initial={{ opacity: 0, scale: 0.95, y: 4 }}
+                                      animate={{ opacity: 1, scale: 1, y: 0 }}
+                                      exit={{ opacity: 0, scale: 0.95, y: 4 }}
+                                      className="absolute left-0 bottom-full mb-2.5 z-30 bg-white border border-slate-200 shadow-xl rounded-2xl p-2 flex items-center gap-1.5 whitespace-nowrap"
+                                    >
+                                      {EMOJI_LIST.map((emoji) => {
+                                        const hasReacted = (userReactions[post.id] || []).includes(emoji);
+                                        return (
+                                          <button
+                                            key={emoji}
+                                            type="button"
+                                            disabled={hasReacted}
+                                            onClick={() => handleReactToPost(post.id, emoji)}
+                                            className="text-lg p-2 rounded-xl transition-all hover:scale-125 hover:bg-slate-50 disabled:opacity-30 disabled:pointer-events-none active:scale-90 cursor-pointer"
+                                            title={`React ${emoji}`}
+                                          >
+                                            {emoji}
+                                          </button>
+                                        );
+                                      })}
+                                    </motion.div>
+                                  </>
+                                )}
+                              </AnimatePresence>
                             </div>
 
                             <button
                               onClick={() => handlePostExpand(post.id)}
-                              className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg transition-all cursor-pointer ${
+                              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full border transition-all cursor-pointer ${
                                 isExpanded 
-                                  ? "bg-brand-50 text-brand-700" 
-                                  : "hover:bg-slate-50 text-slate-500"
+                                  ? "bg-brand-50 border-brand-200 text-brand-700" 
+                                  : "bg-white border-slate-200 text-slate-500 hover:bg-slate-50 hover:text-slate-800"
                               }`}
                             >
                               <MessageSquare className="w-4 h-4" />
@@ -504,10 +807,10 @@ export default function DashboardView({ user, onLogout, onUpdateUser, onSelectBo
                             <button
                               type="button"
                               onClick={() => handleSharePost(post.id)}
-                              className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg transition-all cursor-pointer ${
+                              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full border transition-all cursor-pointer ${
                                 copiedPostId === post.id
-                                  ? "bg-emerald-50 text-emerald-700" 
-                                  : "hover:bg-slate-50 text-slate-500"
+                                  ? "bg-emerald-50 border-emerald-200 text-emerald-700" 
+                                  : "bg-white border-slate-200 text-slate-500 hover:bg-slate-50 hover:text-slate-800"
                               }`}
                             >
                               {copiedPostId === post.id ? (
@@ -515,7 +818,7 @@ export default function DashboardView({ user, onLogout, onUpdateUser, onSelectBo
                               ) : (
                                 <Share2 className="w-4 h-4" />
                               )}
-                              <span>{copiedPostId === post.id ? "Link Copied!" : "Share Post"}</span>
+                              <span>{copiedPostId === post.id ? "Copied!" : "Share"}</span>
                             </button>
                           </div>
 
@@ -579,6 +882,320 @@ export default function DashboardView({ user, onLogout, onUpdateUser, onSelectBo
               )}
             </div>
 
+          </div>
+        )}
+
+        {/* --- TAB: POST FEED HUB --- */}
+        {activeTab === "post_feed" && (
+          <div className="space-y-6">
+            <div className="flex border border-slate-100 rounded-2xl p-6 bg-white flex-col md:flex-row md:items-center justify-between gap-4 shadow-sm">
+              <div className="space-y-1">
+                <span className="inline-flex items-center gap-1 text-[10px] font-mono tracking-widest uppercase font-bold text-slate-500 bg-slate-100 px-2 rounded-full">
+                  📌 Global Hub
+                </span>
+                <h3 className="text-xl font-display font-semibold text-slate-800">
+                  Anonymous Post Feed Hub
+                </h3>
+                <p className="text-xs text-slate-400 max-w-md">
+                  Browse and discover posts from other independent creators across the network, follow your favorites, and join the conversation.
+                </p>
+              </div>
+
+              <div className="flex items-center gap-2 bg-slate-50 border border-slate-100 p-1 rounded-xl self-start">
+                <button
+                  onClick={() => setFeedFilter("all")}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold cursor-pointer transition-all ${
+                    feedFilter === "all"
+                      ? "bg-slate-900 text-white shadow"
+                      : "text-slate-500 hover:text-slate-800"
+                  }`}
+                >
+                  All Posts
+                </button>
+                <button
+                  onClick={() => setFeedFilter("following")}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold cursor-pointer transition-all ${
+                    feedFilter === "following"
+                      ? "bg-slate-900 text-white shadow"
+                      : "text-slate-500 hover:text-slate-800"
+                  }`}
+                >
+                  My Subscriptions
+                </button>
+              </div>
+            </div>
+
+            {loadingGlobalFeed ? (
+              <div className="text-center py-12">
+                <RefreshCw className="w-8 h-8 text-brand-600 animate-spin mx-auto mb-3" />
+                <p className="text-xs text-slate-400 font-mono">Loading global community timeline...</p>
+              </div>
+            ) : (() => {
+              // Filter based on "all" vs "following"
+              let displayedPosts = globalPosts;
+              if (feedFilter === "following") {
+                displayedPosts = globalPosts.filter((p) => followingMap[p.authorId] === true);
+              }
+
+              if (displayedPosts.length === 0) {
+                return (
+                  <div className="text-center py-16 bg-white border border-slate-100 rounded-2xl p-8 max-w-md mx-auto">
+                    <div className="inline-flex p-3 bg-slate-50 border border-slate-100 rounded-full mb-3 text-slate-400">
+                      <Compass className="w-6 h-6 animate-pulse" />
+                    </div>
+                    <h4 className="font-display font-semibold text-slate-800 text-sm mb-1">
+                      {feedFilter === "all" ? "No global posts found" : "No subscriptions yet"}
+                    </h4>
+                    <p className="text-slate-400 text-xs leading-relaxed mb-4">
+                      {feedFilter === "all"
+                        ? "The timeline is currently quiet. Be the first to share your thoughts on your board!"
+                        : "You haven't followed any creators yet. Explore other boards and hit Subscribe to build your feed!"}
+                    </p>
+                    {feedFilter === "following" && (
+                      <button
+                        onClick={() => setFeedFilter("all")}
+                        className="bg-brand-600 hover:bg-brand-700 text-white font-semibold py-1.5 px-4 rounded-xl text-xs cursor-pointer transition-all"
+                      >
+                        Explore All Public Posts
+                      </button>
+                    )}
+                  </div>
+                );
+              }
+
+              return (
+                <div className="space-y-4">
+                  {displayedPosts.map((post) => {
+                    const isFollowing = followingMap[post.authorId] === true;
+                    // Check if self post
+                    const isSelf = post.authorId === user.id;
+                    const comments = commentsMap[post.id] || [];
+                    const isExpanded = expandedPostId === post.id;
+
+                    return (
+                      <motion.div
+                        key={post.id}
+                        initial={{ opacity: 0, y: 8 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        className="bg-white border border-slate-100 rounded-2xl p-5 shadow-sm space-y-3"
+                      >
+                        {/* Post Header: Nickname & Follow option */}
+                        <div className="flex items-center justify-between gap-3 pb-3 border-b border-slate-50">
+                          <div className="flex items-center gap-2">
+                            <div className="w-8 h-8 rounded-full bg-slate-50 border border-slate-100 flex items-center justify-center font-bold text-slate-700 text-xs">
+                              {post.authorNickname.substring(0, 2).toUpperCase()}
+                            </div>
+                            <div>
+                              <div className="flex items-center gap-1.5">
+                                <button
+                                  onClick={() => onSelectBoard(post.authorId)}
+                                  className="font-semibold text-slate-800 text-xs hover:text-brand-600 hover:underline cursor-pointer font-sans"
+                                >
+                                  {post.authorNickname}
+                                </button>
+                                {isSelf && (
+                                  <span className="text-[9px] bg-indigo-50 text-indigo-600 font-mono px-1.5 py-0.5 rounded font-bold">
+                                    Me
+                                  </span>
+                                )}
+                              </div>
+                              <span className="text-[10px] text-slate-400 font-mono block">
+                                {new Date(post.createdAt).toLocaleDateString()} at {new Date(post.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                              </span>
+                            </div>
+                          </div>
+
+                          {!isSelf && (
+                            <button
+                              onClick={() => handleToggleFollowGlobal(post.authorId)}
+                              className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-semibold border transition-all cursor-pointer ${
+                                isFollowing
+                                  ? "bg-slate-50 border-slate-200 text-slate-500 hover:bg-slate-100"
+                                  : "bg-brand-50 border-brand-150 text-brand-700 hover:bg-brand-100"
+                              }`}
+                            >
+                              {isFollowing ? <BellOff className="w-3 h-3 text-slate-400" /> : <Bell className="w-3 h-3" />}
+                              <span>{isFollowing ? "Unfollow" : "Follow"}</span>
+                            </button>
+                          )}
+                        </div>
+
+                        {/* Post Content */}
+                        <p className="text-slate-600 text-xs leading-relaxed break-words whitespace-pre-wrap">
+                          {post.content}
+                        </p>
+
+                        {/* Actions Group */}
+                        <div className="flex flex-wrap items-center gap-3 pt-3">
+                          {/* Emoji reactions */}
+                          <div className="relative">
+                            <div className="flex items-center gap-1 bg-slate-50 hover:bg-slate-150 p-0.5 rounded-full border border-slate-100">
+                              <button
+                                onClick={() => setOpenReactMenuPostId(openReactMenuPostId === post.id ? null : post.id)}
+                                className="flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-semibold text-slate-600 cursor-pointer"
+                              >
+                                <span>{post.likesCount > 0 ? "❤️" : "💡"}</span>
+                                <span>React ({post.likesCount})</span>
+                              </button>
+                            </div>
+
+                            {/* Emoji Reaction dropdown */}
+                            <AnimatePresence>
+                              {openReactMenuPostId === post.id && (
+                                <>
+                                  <div className="fixed inset-0 z-20" onClick={() => setOpenReactMenuPostId(null)} />
+                                  <motion.div
+                                    initial={{ opacity: 0, scale: 0.95, y: 4 }}
+                                    animate={{ opacity: 1, scale: 1, y: 0 }}
+                                    exit={{ opacity: 0, scale: 0.95, y: 4 }}
+                                    className="absolute left-0 bottom-full mb-2 z-30 bg-white border border-slate-200 shadow-xl rounded-2xl p-1.5 flex items-center gap-1"
+                                  >
+                                    {EMOJI_LIST.map((emoji) => {
+                                      const hasReacted = (userReactions[post.id] || []).includes(emoji);
+                                      return (
+                                        <button
+                                          key={emoji}
+                                          disabled={hasReacted}
+                                          onClick={async () => {
+                                            const savedR = userReactions[post.id] || [];
+                                            if (savedR.includes(emoji)) return;
+                                            try {
+                                              const updated = await apiReactToPost(post.id, emoji);
+                                              setGlobalPosts((prev) =>
+                                                prev.map((p) => {
+                                                  if (p.id === post.id) {
+                                                    return { ...p, likesCount: updated.likesCount, reactions: updated.reactions };
+                                                  }
+                                                  return p;
+                                                })
+                                              );
+                                              setUserReactions((prev) => ({
+                                                ...prev,
+                                                [post.id]: [...savedR, emoji],
+                                              }));
+                                            } catch (err) {
+                                              console.error(err);
+                                            }
+                                            setOpenReactMenuPostId(null);
+                                          }}
+                                          className="text-base p-1.5 rounded-lg hover:bg-slate-50 transition-all hover:scale-125 disabled:opacity-35 cursor-pointer"
+                                        >
+                                          {emoji}
+                                        </button>
+                                      );
+                                    })}
+                                  </motion.div>
+                                </>
+                              )}
+                            </AnimatePresence>
+                          </div>
+
+                          {/* Trigger reading comments */}
+                          <button
+                            onClick={async () => {
+                              if (isExpanded) {
+                                setExpandedPostId(null);
+                              } else {
+                                setExpandedPostId(post.id);
+                                try {
+                                  const list = await apiGetComments(post.id);
+                                  setCommentsMap((prev) => ({ ...prev, [post.id]: list }));
+                                } catch (err) {
+                                  console.error(err);
+                                }
+                              }
+                            }}
+                            className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-semibold border transition-all cursor-pointer ${
+                              isExpanded
+                                ? "bg-slate-900 border-slate-900 text-white"
+                                : "bg-white border-slate-200 text-slate-500 hover:bg-slate-50"
+                            }`}
+                          >
+                            <MessageSquare className="w-3.5 h-3.5" />
+                            <span>{isExpanded ? "Hide Comments" : `Comments (${comments.length})`}</span>
+                          </button>
+
+                          {/* Share Post Button */}
+                          <button
+                            onClick={() => handleSharePost(post.id)}
+                            className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-semibold border transition-all cursor-pointer ${
+                              copiedPostId === post.id
+                                ? "bg-emerald-50 border-emerald-200 text-emerald-700"
+                                : "bg-white border-slate-200 text-slate-500 hover:bg-slate-50"
+                            }`}
+                          >
+                            {copiedPostId === post.id ? <CheckCircle className="w-3.5 h-3.5 text-emerald-600" /> : <Share2 className="w-3.5 h-3.5" />}
+                            <span>{copiedPostId === post.id ? "Copied Link!" : "Share Link"}</span>
+                          </button>
+
+                          {/* View Board */}
+                          <button
+                            onClick={() => onSelectBoard(post.authorId)}
+                            className="flex items-center gap-1 px-3 py-1 rounded-full text-[11px] font-semibold border border-indigo-100 bg-indigo-50/30 text-indigo-700 hover:bg-indigo-50 transition-all cursor-pointer ml-auto"
+                          >
+                            <span>Browse Board</span>
+                            <ArrowRight className="w-3 h-3" />
+                          </button>
+                        </div>
+
+                        {/* Comments Panel */}
+                        <AnimatePresence>
+                          {isExpanded && (
+                            <motion.div
+                              initial={{ opacity: 0, height: 0 }}
+                              animate={{ opacity: 1, height: "auto" }}
+                              exit={{ opacity: 0, height: 0 }}
+                              className="overflow-hidden bg-slate-50/50 rounded-xl p-3 border border-slate-100/60 mt-2 space-y-3"
+                            >
+                              <h5 className="text-[10px] font-mono tracking-wider font-bold uppercase text-slate-400">
+                                Comments Timeline
+                              </h5>
+
+                              {comments.length === 0 ? (
+                                <p className="text-slate-400 text-xs italic">No comments on this post yet. Leave the first comment!</p>
+                              ) : (
+                                <div className="space-y-2 max-h-[160px] overflow-y-auto">
+                                  {comments.map((c) => (
+                                    <div key={c.id} className="bg-white p-2 border border-slate-100 rounded-lg text-xs space-y-0.5">
+                                      <div className="flex items-center justify-between">
+                                        <span className="font-semibold text-slate-700 font-mono text-[9px] bg-slate-100 px-1 rounded">
+                                          {c.nickname}
+                                        </span>
+                                        <span className="text-[8px] text-slate-400 font-mono">
+                                          {new Date(c.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                        </span>
+                                      </div>
+                                      <p className="text-slate-600 font-sans leading-relaxed break-words">{c.content}</p>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+
+                              <form onSubmit={(e) => handleAddCommentGlobal(post.id, e)} className="flex gap-2">
+                                <input
+                                  type="text"
+                                  value={commentFeedInputs[post.id] || ""}
+                                  onChange={(evt) => setCommentFeedInputs((prev) => ({ ...prev, [post.id]: evt.target.value }))}
+                                  placeholder="Type an anonymous comment..."
+                                  className="bg-white border border-slate-200 rounded-xl px-3 py-1.5 text-xs flex-1 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-105"
+                                />
+                                <button
+                                  type="submit"
+                                  disabled={addingCommentGlobalMap[post.id] || !(commentFeedInputs[post.id] || "").trim()}
+                                  className="bg-slate-900 border hover:bg-slate-800 disabled:opacity-40 text-white font-semibold py-1 px-3 rounded-xl text-xs cursor-pointer transition-all"
+                                >
+                                  {addingCommentGlobalMap[post.id] ? "Sending..." : "Comment"}
+                                </button>
+                              </form>
+                            </motion.div>
+                          )}
+                        </AnimatePresence>
+                      </motion.div>
+                    );
+                  })}
+                </div>
+              );
+            })()}
           </div>
         )}
 
@@ -777,7 +1394,7 @@ export default function DashboardView({ user, onLogout, onUpdateUser, onSelectBo
               {/* qrserver.com simple QR API */}
               <div className="bg-slate-50 p-4 rounded-2xl inline-block border border-slate-100 mb-6">
                 <img
-                  src={`https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(directLinkUrl)}`}
+                  src={`https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(qrUrl || directLinkUrl)}`}
                   alt="Board Link QR Code"
                   width={200}
                   height={200}
@@ -787,7 +1404,7 @@ export default function DashboardView({ user, onLogout, onUpdateUser, onSelectBo
               </div>
 
               <div className="text-xs text-slate-500 font-mono break-all bg-slate-50 p-3 rounded-lg border border-slate-100 select-all mb-6">
-                {directLinkUrl}
+                {qrUrl || directLinkUrl}
               </div>
 
               <button

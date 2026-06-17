@@ -12,6 +12,7 @@ export interface Post {
   userId: string;
   content: string;
   likesCount: number;
+  reactions?: Record<string, number>;
   createdAt: string;
 }
 
